@@ -48,22 +48,22 @@ function Donut({ slices, total }: { slices: Array<{ name: string; value: number 
 }
 
 export default function Dashboard({ data }: { data: AppData }) {
-  const { accounts, txns } = data;
+  const { accounts, txns, book } = data;
   const month = currentMonth();
   const period = { from: `${month}-01`, to: `${month}-31` };
   const nw = netWorth(txns, accounts);
   const ie = incomeExpense(txns, accounts, { period });
-  const biz = incomeExpense(txns, accounts, { tag: 'business', period });
   const slices = accounts
     .filter((a) => a.type === 'asset')
     .map((a) => ({ name: a.name, value: accountBalance(txns, a.id) }))
     .filter((s) => s.value > 0);
   const totalAssets = slices.reduce((s, x) => s + x.value, 0);
+  const netLabel = book.type === 'business' ? '本月利润' : '本月结余';
 
   return (
     <>
       <div className="main-head">
-        <h2>总览</h2>
+        <h2>{book.name} · 总览</h2>
         <span className="muted">{month}</span>
       </div>
       <div className="stats">
@@ -80,8 +80,8 @@ export default function Dashboard({ data }: { data: AppData }) {
           <div className="v sm neg">{fmtMoney(ie.expense)}</div>
         </div>
         <div className="stat">
-          <div className="k">本月生意利润</div>
-          <div className="v sm biz">{fmtMoney(biz.net)}</div>
+          <div className="k">{netLabel}</div>
+          <div className={`v sm${book.type === 'business' ? ' biz' : ''}`}>{fmtMoney(ie.net)}</div>
         </div>
       </div>
       <div className="mid">
@@ -95,9 +95,11 @@ export default function Dashboard({ data }: { data: AppData }) {
       </div>
       <div className="card">
         <h3>最近交易</h3>
-        {txns.slice(0, 6).map((t) => (
-          <TxnRow key={t.id} txn={t} data={data} />
-        ))}
+        {txns.length === 0 ? (
+          <p className="muted">还没有交易，从「记一笔」开始。</p>
+        ) : (
+          txns.slice(0, 6).map((t) => <TxnRow key={t.id} txn={t} data={data} />)
+        )}
       </div>
     </>
   );

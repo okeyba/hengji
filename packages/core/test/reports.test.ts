@@ -2,27 +2,29 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { expandEntry, accountBalance, netWorth, incomeExpense } from '../src/index';
 import type { Account, Transaction } from '../src/index';
 
+const B = 'b1';
+
 const accounts: Account[] = [
-  { id: 'bank', name: '招行卡', type: 'asset', parentId: null, currency: 'CNY', archived: false },
-  { id: 'alipay', name: '支付宝', type: 'asset', parentId: null, currency: 'CNY', archived: false },
-  { id: 'invest', name: '投资账户', type: 'asset', parentId: null, currency: 'CNY', archived: false },
-  { id: 'card', name: '信用卡', type: 'liability', parentId: null, currency: 'CNY', archived: false },
-  { id: 'food', name: '餐饮', type: 'expense', parentId: null, currency: 'CNY', archived: false },
-  { id: 'supply', name: '进货成本', type: 'expense', parentId: null, currency: 'CNY', archived: false },
-  { id: 'salary', name: '工资', type: 'income', parentId: null, currency: 'CNY', archived: false },
-  { id: 'sales', name: '营业收入', type: 'income', parentId: null, currency: 'CNY', archived: false },
+  { id: 'bank', bookId: B, name: '招行卡', type: 'asset', parentId: null, currency: 'CNY', archived: false },
+  { id: 'alipay', bookId: B, name: '支付宝', type: 'asset', parentId: null, currency: 'CNY', archived: false },
+  { id: 'invest', bookId: B, name: '投资账户', type: 'asset', parentId: null, currency: 'CNY', archived: false },
+  { id: 'card', bookId: B, name: '信用卡', type: 'liability', parentId: null, currency: 'CNY', archived: false },
+  { id: 'food', bookId: B, name: '餐饮', type: 'expense', parentId: null, currency: 'CNY', archived: false },
+  { id: 'supply', bookId: B, name: '进货成本', type: 'expense', parentId: null, currency: 'CNY', archived: false },
+  { id: 'salary', bookId: B, name: '工资', type: 'income', parentId: null, currency: 'CNY', archived: false },
+  { id: 'sales', bookId: B, name: '营业收入', type: 'income', parentId: null, currency: 'CNY', archived: false },
 ];
 
 function build(): Transaction[] {
   let n = 0;
   const gen = (): string => `id${++n}`;
   return [
-    expandEntry({ kind: 'income', date: '2026-05-01', amount: 500000, accountId: 'bank', categoryId: 'salary' }, gen),
-    expandEntry({ kind: 'expense', date: '2026-05-03', amount: 3000, accountId: 'bank', categoryId: 'food' }, gen),
-    expandEntry({ kind: 'transfer', date: '2026-05-05', amount: 100000, fromAccountId: 'bank', toAccountId: 'alipay' }, gen),
-    expandEntry({ kind: 'income', date: '2026-06-02', amount: 200000, accountId: 'alipay', categoryId: 'sales', tags: ['business'] }, gen),
-    expandEntry({ kind: 'expense', date: '2026-06-03', amount: 80000, accountId: 'card', categoryId: 'supply', tags: ['business'] }, gen),
-    expandEntry({ kind: 'transfer', date: '2026-05-10', amount: 100000, fromAccountId: 'bank', toAccountId: 'invest' }, gen),
+    expandEntry({ kind: 'income', bookId: B, date: '2026-05-01', amount: 500000, accountId: 'bank', categoryId: 'salary' }, gen),
+    expandEntry({ kind: 'expense', bookId: B, date: '2026-05-03', amount: 3000, accountId: 'bank', categoryId: 'food' }, gen),
+    expandEntry({ kind: 'transfer', bookId: B, date: '2026-05-05', amount: 100000, fromAccountId: 'bank', toAccountId: 'alipay' }, gen),
+    expandEntry({ kind: 'income', bookId: B, date: '2026-06-02', amount: 200000, accountId: 'alipay', categoryId: 'sales', tags: ['business'] }, gen),
+    expandEntry({ kind: 'expense', bookId: B, date: '2026-06-03', amount: 80000, accountId: 'card', categoryId: 'supply', tags: ['business'] }, gen),
+    expandEntry({ kind: 'transfer', bookId: B, date: '2026-05-10', amount: 100000, fromAccountId: 'bank', toAccountId: 'invest' }, gen),
   ];
 }
 
@@ -47,7 +49,7 @@ describe('reports', () => {
     expect(incomeExpense(txns, accounts)).toEqual({ income: 700000, expense: 83000, net: 617000 });
   });
 
-  it('incomeExpense 按 business 标签 = 小生意利润', () => {
+  it('incomeExpense 按 business 标签过滤', () => {
     expect(incomeExpense(txns, accounts, { tag: 'business' })).toEqual({ income: 200000, expense: 80000, net: 120000 });
   });
 

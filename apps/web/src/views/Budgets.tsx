@@ -5,7 +5,7 @@ import { genId } from '../db';
 import { currentMonth, fmtMoney } from '../format';
 
 export default function Budgets({ data }: { data: AppData }) {
-  const { accounts, txns, budgets, repo, reload } = data;
+  const { accounts, txns, budgets, repo, reload, book } = data;
   const month = currentMonth();
   const lines = budgetUsage(txns, budgets, month);
   const nameOf = (id: string): string => accounts.find((a) => a.id === id)?.name ?? id;
@@ -22,7 +22,7 @@ export default function Budgets({ data }: { data: AppData }) {
       setErr('请选择分类并输入有效限额');
       return;
     }
-    await repo.addBudget({ id: genId(), accountId: effAcc, monthlyLimit: toMinor(major) });
+    await repo.addBudget({ id: genId(), bookId: book.id, accountId: effAcc, monthlyLimit: toMinor(major) });
     setLimit('');
     await reload();
   }
@@ -30,7 +30,7 @@ export default function Budgets({ data }: { data: AppData }) {
   return (
     <>
       <div className="main-head">
-        <h2>预算</h2>
+        <h2>{book.name} · 预算</h2>
         <span className="muted">{month}</span>
       </div>
       <div className="card">

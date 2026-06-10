@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { expandEntry, budgetUsage } from '../src/index';
 import type { Budget } from '../src/index';
 
+const B = 'b1';
+
 function counter(): () => string {
   let n = 0;
   return () => `id${++n}`;
@@ -11,14 +13,14 @@ describe('budgetUsage', () => {
   it('按月按分类统计已用/限额/超支，跨月不混入', () => {
     const gen = counter();
     const txns = [
-      expandEntry({ kind: 'expense', date: '2026-06-03', amount: 30000, accountId: 'bank', categoryId: 'food' }, gen),
-      expandEntry({ kind: 'expense', date: '2026-06-15', amount: 25000, accountId: 'bank', categoryId: 'food' }, gen),
-      expandEntry({ kind: 'expense', date: '2026-06-10', amount: 20000, accountId: 'bank', categoryId: 'shopping' }, gen),
-      expandEntry({ kind: 'expense', date: '2026-05-20', amount: 99999, accountId: 'bank', categoryId: 'food' }, gen), // 5 月，不计入 6 月
+      expandEntry({ kind: 'expense', bookId: B, date: '2026-06-03', amount: 30000, accountId: 'bank', categoryId: 'food' }, gen),
+      expandEntry({ kind: 'expense', bookId: B, date: '2026-06-15', amount: 25000, accountId: 'bank', categoryId: 'food' }, gen),
+      expandEntry({ kind: 'expense', bookId: B, date: '2026-06-10', amount: 20000, accountId: 'bank', categoryId: 'shopping' }, gen),
+      expandEntry({ kind: 'expense', bookId: B, date: '2026-05-20', amount: 99999, accountId: 'bank', categoryId: 'food' }, gen), // 5 月，不计入 6 月
     ];
     const budgets: Budget[] = [
-      { id: 'b1', accountId: 'food', monthlyLimit: 50000 },
-      { id: 'b2', accountId: 'shopping', monthlyLimit: 100000 },
+      { id: 'b1', bookId: B, accountId: 'food', monthlyLimit: 50000 },
+      { id: 'b2', bookId: B, accountId: 'shopping', monthlyLimit: 100000 },
     ];
     const lines = budgetUsage(txns, budgets, '2026-06');
     expect(lines.find((l) => l.accountId === 'food')).toEqual({
@@ -38,7 +40,7 @@ describe('budgetUsage', () => {
   });
 
   it('无消费的预算 spent=0', () => {
-    const budgets: Budget[] = [{ id: 'b1', accountId: 'food', monthlyLimit: 50000 }];
+    const budgets: Budget[] = [{ id: 'b1', bookId: B, accountId: 'food', monthlyLimit: 50000 }];
     expect(budgetUsage([], budgets, '2026-06')[0]).toEqual({
       accountId: 'food',
       limit: 50000,

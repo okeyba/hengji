@@ -11,6 +11,7 @@ import { assertBalanced } from './ledger';
  * - 期初余额：新账户从 0 设到初始值，counterAccountId=期初余额(equity)。
  */
 export interface AdjustBalanceInput {
+  bookId: string;
   date: string;
   /** 要调整余额的账户 */
   accountId: string;
@@ -46,6 +47,7 @@ export function adjustBalanceEntry(input: AdjustBalanceInput, genId: () => strin
   assertBalanced(postings);
   return {
     id: txnId,
+    bookId: input.bookId,
     date: input.date,
     payee: input.payee ?? '',
     note: input.note ?? '余额调整',

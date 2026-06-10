@@ -5,7 +5,7 @@ import { genId } from '../db';
 import { fmtMoney, todayISO } from '../format';
 
 export default function Invest({ data }: { data: AppData }) {
-  const { accounts, txns, repo, reload } = data;
+  const { accounts, txns, repo, reload, book } = data;
   const assets = accounts.filter((a) => a.type === 'asset');
   const pnl = accounts.find((a) => a.name === '投资盈亏');
   const [accId, setAccId] = useState('');
@@ -13,9 +13,8 @@ export default function Invest({ data }: { data: AppData }) {
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  const defaultAcc = assets.find((a) => a.name === '投资账户') ?? assets[0];
-  const eff = assets.find((a) => a.id === accId) ?? defaultAcc;
-  if (!eff || !pnl) return <p className="muted">缺少投资相关科目（投资账户 / 投资盈亏）。</p>;
+  const eff = assets.find((a) => a.id === accId) ?? assets[0];
+  if (!eff || !pnl) return <p className="muted">本账本缺少投资科目（投资账户 / 投资盈亏）。</p>;
 
   const balance = accountBalance(txns, eff.id);
   const cumPnl = -accountBalance(txns, pnl.id); // 收入科目余额为负 → 翻正即累计盈亏
@@ -32,6 +31,7 @@ export default function Invest({ data }: { data: AppData }) {
       await repo.addTransaction(
         adjustBalanceEntry(
           {
+            bookId: book.id,
             date: todayISO(),
             accountId: eff!.id,
             currentBalance: balance,
@@ -53,12 +53,12 @@ export default function Invest({ data }: { data: AppData }) {
   return (
     <>
       <div className="main-head">
-        <h2>投资</h2>
+        <h2>{book.name} · 投资</h2>
       </div>
       <div className="stats">
-        <div className="stat">
+        <div className="stat hero-stat">
           <div className="k">当前现值（{eff.name}）</div>
-          <div className="v sm">{fmtMoney(balance)}</div>
+          <div className="v">{fmtMoney(balance)}</div>
         </div>
         <div className="stat">
           <div className="k">累计投资盈亏</div>
@@ -69,7 +69,7 @@ export default function Invest({ data }: { data: AppData }) {
         <h3>更新现值</h3>
         <p className="muted">
           输入账户最新市值，差额自动作为浮盈/浮亏记入「投资盈亏」并计入净资产。极简档——不跟踪持仓明细（完整投资模块见路线
-          v0.3）。
+          v0.4）。
         </p>
         <div className="qgrid" style={{ marginTop: 10 }}>
           <label>

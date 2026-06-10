@@ -1,26 +1,30 @@
 import Database from '@tauri-apps/plugin-sql';
 import { assertBalanced } from '@app/core';
-import type { Account, Budget, Posting, Transaction } from '@app/core';
+import type { Account, Book, Budget, Posting, Transaction } from '@app/core';
 import type {
   AccountPatch,
+  BookPatch,
   BudgetPatch,
   Clock,
   Repository,
   StoredAccount,
+  StoredBook,
   StoredBudget,
   StoredTransaction,
   TxnQuery,
 } from './types';
-import { SCHEMA, toAccount, toBudget, toPosting, toTxn } from './schema';
-import type { AccountRow, BudgetRow, PostingRow, TxnRow } from './schema';
+import { toAccount, toBook, toBudget, toPosting, toTxn } from './schema';
+import type { AccountRow, BookRow, BudgetRow, PostingRow, TxnRow } from './schema';
+import { migrate } from './migrations';
 
 const defaultClock: Clock = () => new Date().toISOString();
 
 /**
  * Tauri 桌面实现：经 tauri-plugin-sql（sqlx）访问本地 SQLite 文件。
- * 与 SqliteRepository 共用 schema 与行映射（./schema），占位符用 sqlx 的 $1..$N。
- * 只能在 Tauri runtime 内运行（走 IPC 到 Rust），因此无 Node 单测——
- * 行为契约由 SqliteRepository 的共享契约测试背书（同一 SQL 形状）。
+ * schema 由 ./migrations 版本化管理（load 时自动迁移，含遗留库回填默认账本）；
+ * 行映射与 SqliteRepository 共用，占位符用 sqlx 的 $1..$N。
+ * 只能在 Tauri runtime 内运行（走 IPC 到 Rust），行为契约由
+ * SqliteRepository 的共享契约测试背书（同一 SQL 形状）。
  */
 export class TauriSqlRepository implements Repository {
   private constructor(
@@ -28,15 +32,24 @@ export class TauriSqlRepository implements Repository {
     private readonly now: Clock,
   ) {}
 
-  /** 打开（或创建）本地 SQLite 并确保 schema。path 形如 'sqlite:heng.db'，相对应用配置目录。 */
+  /** 打开（或创建）本地 SQLite、自动迁移 schema。path 形如 'sqlite:heng.db'，相对应用配置目录。 */
   static async load(path = 'sqlite:heng.db', opts: { now?: Clock } = {}): Promise<TauriSqlRepository> {
     const db = await Database.load(path);
-    // PRAGMA journal_mode 会返回一行结果，必须走 select；foreign_keys 同样用 select 以保持一致
+    // PRAGMA journal_mode 会返回一行结果，必须走 select
     await db.select('PRAGMA journal_mode = WAL');
     await db.select('PRAGMA foreign_keys = ON');
-    for (const stmt of SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) {
-      await db.execute(stmt);
-    }
+    await migrate({
+      run: async (sql) => {
+        await db.execute(sql);
+      },
+      getVersion: async () => {
+        const rows = await db.select<Array<{ user_version: number }>>('PRAGMA user_version');
+        return rows[0]?.user_version ?? 0;
+      },
+      setVersion: async (v) => {
+        await db.execute(`PRAGMA user_version = ${v}`);
+      },
+    });
     return new TauriSqlRepository(db, opts.now ?? defaultClock);
   }
 
@@ -60,16 +73,68 @@ export class TauriSqlRepository implements Repository {
     return rows.length > 0;
   }
 
+  // ---- books ----
+  async addBook(book: Book): Promise<StoredBook> {
+    if (await this.exists('SELECT 1 FROM books WHERE id = $1', [book.id])) {
+      throw new Error(`账本已存在：${book.id}`);
+    }
+    const ts = this.now();
+    await this.db.execute(
+      `INSERT INTO books (id, name, type, archived, created_at, updated_at, deleted) VALUES ($1, $2, $3, $4, $5, $6, 0)`,
+      [book.id, book.name, book.type, book.archived ? 1 : 0, ts, ts],
+    );
+    return (await this.getBook(book.id))!;
+  }
+
+  async getBook(id: string): Promise<StoredBook | null> {
+    const rows = await this.db.select<BookRow[]>('SELECT * FROM books WHERE id = $1 AND deleted = 0', [id]);
+    return rows[0] ? toBook(rows[0]) : null;
+  }
+
+  async listBooks(opts: { includeArchived?: boolean } = {}): Promise<StoredBook[]> {
+    const sql = opts.includeArchived
+      ? 'SELECT * FROM books WHERE deleted = 0'
+      : 'SELECT * FROM books WHERE deleted = 0 AND archived = 0';
+    const rows = await this.db.select<BookRow[]>(sql);
+    return rows.map(toBook);
+  }
+
+  async updateBook(id: string, patch: BookPatch): Promise<StoredBook> {
+    const cur = await this.getBook(id);
+    if (!cur) throw new Error(`账本不存在：${id}`);
+    const next: StoredBook = { ...cur, ...patch, updatedAt: this.now() };
+    await this.db.execute('UPDATE books SET name=$1, archived=$2, updated_at=$3 WHERE id=$4', [
+      next.name,
+      next.archived ? 1 : 0,
+      next.updatedAt,
+      id,
+    ]);
+    return (await this.getBook(id))!;
+  }
+
   // ---- accounts ----
   async addAccount(account: Account): Promise<StoredAccount> {
     if (await this.exists('SELECT 1 FROM accounts WHERE id = $1', [account.id])) {
       throw new Error(`账户已存在：${account.id}`);
     }
+    if (!(await this.exists('SELECT 1 FROM books WHERE id = $1 AND deleted = 0', [account.bookId]))) {
+      throw new Error(`账本不存在：${account.bookId}`);
+    }
     const ts = this.now();
     await this.db.execute(
-      `INSERT INTO accounts (id, name, type, parent_id, currency, archived, created_at, updated_at, deleted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)`,
-      [account.id, account.name, account.type, account.parentId, account.currency, account.archived ? 1 : 0, ts, ts],
+      `INSERT INTO accounts (id, book_id, name, type, parent_id, currency, archived, created_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0)`,
+      [
+        account.id,
+        account.bookId,
+        account.name,
+        account.type,
+        account.parentId,
+        account.currency,
+        account.archived ? 1 : 0,
+        ts,
+        ts,
+      ],
     );
     return (await this.getAccount(account.id))!;
   }
@@ -79,11 +144,15 @@ export class TauriSqlRepository implements Repository {
     return rows[0] ? toAccount(rows[0]) : null;
   }
 
-  async listAccounts(opts: { includeArchived?: boolean } = {}): Promise<StoredAccount[]> {
-    const sql = opts.includeArchived
-      ? 'SELECT * FROM accounts WHERE deleted = 0'
-      : 'SELECT * FROM accounts WHERE deleted = 0 AND archived = 0';
-    const rows = await this.db.select<AccountRow[]>(sql);
+  async listAccounts(opts: { includeArchived?: boolean; bookId?: string } = {}): Promise<StoredAccount[]> {
+    const cond = ['deleted = 0'];
+    const params: unknown[] = [];
+    if (!opts.includeArchived) cond.push('archived = 0');
+    if (opts.bookId) {
+      params.push(opts.bookId);
+      cond.push(`book_id = $${params.length}`);
+    }
+    const rows = await this.db.select<AccountRow[]>(`SELECT * FROM accounts WHERE ${cond.join(' AND ')}`, params);
     return rows.map(toAccount);
   }
 
@@ -99,17 +168,33 @@ export class TauriSqlRepository implements Repository {
   }
 
   // ---- transactions ----
+  private async assertSameBook(txn: Transaction): Promise<void> {
+    const ids = [...new Set(txn.postings.map((p) => p.accountId))];
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
+    const rows = await this.db.select<Array<{ id: string; book_id: string }>>(
+      `SELECT id, book_id FROM accounts WHERE id IN (${placeholders}) AND deleted = 0`,
+      ids,
+    );
+    const byId = new Map(rows.map((r) => [r.id, r.book_id] as const));
+    for (const id of ids) {
+      const bookId = byId.get(id);
+      if (bookId === undefined) throw new Error(`分录引用的账户不存在：${id}`);
+      if (bookId !== txn.bookId) throw new Error(`禁止跨账本分录：账户 ${id} 属于其他账本`);
+    }
+  }
+
   async addTransaction(txn: Transaction): Promise<StoredTransaction> {
     if (await this.exists('SELECT 1 FROM transactions WHERE id = $1', [txn.id])) {
       throw new Error(`交易已存在：${txn.id}`);
     }
     assertBalanced(txn.postings);
+    await this.assertSameBook(txn);
     const ts = this.now();
     await this.tx(async () => {
       await this.db.execute(
-        `INSERT INTO transactions (id, date, payee, note, tags, created_at, updated_at, deleted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 0)`,
-        [txn.id, txn.date, txn.payee, txn.note, JSON.stringify(txn.tags), ts, ts],
+        `INSERT INTO transactions (id, book_id, date, payee, note, tags, created_at, updated_at, deleted)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)`,
+        [txn.id, txn.bookId, txn.date, txn.payee, txn.note, JSON.stringify(txn.tags), ts, ts],
       );
       await this.insertPostings(txn.id, txn.postings);
     });
@@ -136,6 +221,10 @@ export class TauriSqlRepository implements Repository {
   async listTransactions(query: TxnQuery = {}): Promise<StoredTransaction[]> {
     const cond: string[] = ['t.deleted = 0'];
     const params: unknown[] = [];
+    if (query.bookId) {
+      params.push(query.bookId);
+      cond.push(`t.book_id = $${params.length}`);
+    }
     if (query.from) {
       params.push(query.from);
       cond.push(`t.date >= $${params.length}`);
@@ -171,10 +260,12 @@ export class TauriSqlRepository implements Repository {
   }
 
   async updateTransaction(id: string, txn: Transaction): Promise<StoredTransaction> {
-    if (!(await this.exists('SELECT 1 FROM transactions WHERE id = $1 AND deleted = 0', [id]))) {
-      throw new Error(`交易不存在：${id}`);
-    }
+    const rows = await this.db.select<TxnRow[]>('SELECT * FROM transactions WHERE id = $1 AND deleted = 0', [id]);
+    const existing = rows[0];
+    if (!existing) throw new Error(`交易不存在：${id}`);
+    if (txn.bookId !== existing.book_id) throw new Error('交易不可移动到其他账本');
     assertBalanced(txn.postings);
+    await this.assertSameBook(txn);
     const ts = this.now();
     await this.tx(async () => {
       await this.db.execute('UPDATE transactions SET date=$1, payee=$2, note=$3, tags=$4, updated_at=$5 WHERE id=$6', [
@@ -203,16 +294,28 @@ export class TauriSqlRepository implements Repository {
     if (await this.exists('SELECT 1 FROM budgets WHERE id = $1', [budget.id])) {
       throw new Error(`预算已存在：${budget.id}`);
     }
+    const acc = await this.db.select<Array<{ book_id: string }>>(
+      'SELECT book_id FROM accounts WHERE id = $1 AND deleted = 0',
+      [budget.accountId],
+    );
+    if (!acc[0]) throw new Error(`预算科目不存在：${budget.accountId}`);
+    if (acc[0].book_id !== budget.bookId) throw new Error('预算科目必须与预算同账本');
     const ts = this.now();
     await this.db.execute(
-      'INSERT INTO budgets (id, account_id, monthly_limit, created_at, updated_at, deleted) VALUES ($1, $2, $3, $4, $5, 0)',
-      [budget.id, budget.accountId, budget.monthlyLimit, ts, ts],
+      'INSERT INTO budgets (id, book_id, account_id, monthly_limit, created_at, updated_at, deleted) VALUES ($1, $2, $3, $4, $5, $6, 0)',
+      [budget.id, budget.bookId, budget.accountId, budget.monthlyLimit, ts, ts],
     );
     return (await this.getBudget(budget.id))!;
   }
 
-  async listBudgets(): Promise<StoredBudget[]> {
-    const rows = await this.db.select<BudgetRow[]>('SELECT * FROM budgets WHERE deleted = 0');
+  async listBudgets(query: { bookId?: string } = {}): Promise<StoredBudget[]> {
+    const cond = ['deleted = 0'];
+    const params: unknown[] = [];
+    if (query.bookId) {
+      params.push(query.bookId);
+      cond.push(`book_id = $${params.length}`);
+    }
+    const rows = await this.db.select<BudgetRow[]>(`SELECT * FROM budgets WHERE ${cond.join(' AND ')}`, params);
     return rows.map(toBudget);
   }
 

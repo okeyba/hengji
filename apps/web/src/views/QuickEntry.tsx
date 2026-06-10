@@ -10,12 +10,11 @@ type Kind = 'expense' | 'income' | 'transfer';
 const KIND_LABEL: Record<Kind, string> = { expense: '支出', income: '收入', transfer: '转账' };
 
 export default function QuickEntry({ data }: { data: AppData }) {
-  const { accounts, repo, reload } = data;
+  const { accounts, repo, reload, book } = data;
   const [kind, setKind] = useState<Kind>('expense');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(todayISO());
   const [payee, setPayee] = useState('');
-  const [biz, setBiz] = useState(false);
   const [catId, setCatId] = useState('');
   const [accId, setAccId] = useState('');
   const [toId, setToId] = useState('');
@@ -38,16 +37,15 @@ export default function QuickEntry({ data }: { data: AppData }) {
     }
     try {
       const minor = toMinor(major);
-      const tags = kind === 'transfer' ? [] : [biz ? 'business' : 'personal'];
       let input: EntryInput;
       if (kind === 'transfer') {
         if (effAcc === effTo) {
           setErr('转出与转入账户不能相同');
           return;
         }
-        input = { kind, date, amount: minor, payee, tags, fromAccountId: effAcc, toAccountId: effTo };
+        input = { kind, bookId: book.id, date, amount: minor, payee, tags: [], fromAccountId: effAcc, toAccountId: effTo };
       } else {
-        input = { kind, date, amount: minor, payee, tags, accountId: effAcc, categoryId: effCat };
+        input = { kind, bookId: book.id, date, amount: minor, payee, tags: [], accountId: effAcc, categoryId: effCat };
       }
       await repo.addTransaction(expandEntry(input, genId));
       await reload();
@@ -130,12 +128,6 @@ export default function QuickEntry({ data }: { data: AppData }) {
           <input placeholder="商家 / 备注（可选）" value={payee} onChange={(e) => setPayee(e.target.value)} />
         </label>
       </div>
-      {kind !== 'transfer' && (
-        <label className="tagline">
-          <input type="checkbox" checked={biz} onChange={(e) => setBiz(e.target.checked)} />
-          这是生意账（计入生意利润）
-        </label>
-      )}
       {err && <p className="form-err">{err}</p>}
       {ok && <p className="form-ok">{ok}</p>}
       <button className="btn btn-primary wfull" onClick={() => void save()}>

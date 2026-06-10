@@ -20,6 +20,7 @@ export function assertBalanced(postings: Posting[]): void {
 export type EntryKind = 'expense' | 'income' | 'transfer';
 
 interface EntryBase {
+  bookId: string;
   date: string;
   /** 正的最小单位金额 */
   amount: number;
@@ -80,6 +81,7 @@ export function expandEntry(input: EntryInput, genId: () => string): Transaction
   assertBalanced(postings);
   return {
     id: txnId,
+    bookId: input.bookId,
     date: input.date,
     payee: input.payee ?? '',
     note: input.note ?? '',

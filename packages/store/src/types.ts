@@ -1,4 +1,4 @@
-import type { Account, Budget, Transaction } from '@app/core';
+import type { Account, Book, Budget, Transaction } from '@app/core';
 
 /** 每条记录都带的同步元数据，为将来的云同步预留。 */
 export interface SyncMeta {
@@ -8,12 +8,18 @@ export interface SyncMeta {
   deleted: boolean;
 }
 
+export type StoredBook = Book & SyncMeta;
 export type StoredAccount = Account & SyncMeta;
 export type StoredTransaction = Transaction & SyncMeta;
 export type StoredBudget = Budget & SyncMeta;
 
 /** 时钟注入：返回 ISO 时间戳；默认实现用 Date，测试注入确定性时钟。 */
 export type Clock = () => string;
+
+export interface BookPatch {
+  name?: string;
+  archived?: boolean;
+}
 
 export interface AccountPatch {
   name?: string;
@@ -29,24 +35,36 @@ export interface BudgetPatch {
 }
 
 export interface TxnQuery {
+  /** 仅该账本的交易 */
+  bookId?: string;
   /** 闭区间起始日期 YYYY-MM-DD */
   from?: string;
   /** 闭区间结束日期 */
   to?: string;
-  /** 仅含该标签的交易（如 'business'） */
+  /** 仅含该标签的交易 */
   tag?: string;
   /** 仅含触及该账户的交易 */
   accountId?: string;
 }
 
 /**
- * 平台无关的持久层接口。InMemoryRepository 是第一个实现；
- * 将来的 SQLite 实现遵循同一接口，UI 只依赖此接口。
+ * 平台无关的持久层接口。InMemory / node:sqlite / tauri-plugin-sql 三个实现
+ * 遵循同一契约；UI 只依赖此接口。
+ *
+ * 多账本约束（实现负责校验）：
+ * - 账户必须挂在已存在的账本上；
+ * - 一笔交易的全部分录账户必须与交易同账本（禁止跨账本分录）；
+ * - 交易不可移动到其他账本；预算科目必须与预算同账本。
  */
 export interface Repository {
+  addBook(book: Book): Promise<StoredBook>;
+  getBook(id: string): Promise<StoredBook | null>;
+  listBooks(opts?: { includeArchived?: boolean }): Promise<StoredBook[]>;
+  updateBook(id: string, patch: BookPatch): Promise<StoredBook>;
+
   addAccount(account: Account): Promise<StoredAccount>;
   getAccount(id: string): Promise<StoredAccount | null>;
-  listAccounts(opts?: { includeArchived?: boolean }): Promise<StoredAccount[]>;
+  listAccounts(opts?: { includeArchived?: boolean; bookId?: string }): Promise<StoredAccount[]>;
   updateAccount(id: string, patch: AccountPatch): Promise<StoredAccount>;
 
   addTransaction(txn: Transaction): Promise<StoredTransaction>;
@@ -56,7 +74,7 @@ export interface Repository {
   softDeleteTransaction(id: string): Promise<void>;
 
   addBudget(budget: Budget): Promise<StoredBudget>;
-  listBudgets(): Promise<StoredBudget[]>;
+  listBudgets(query?: { bookId?: string }): Promise<StoredBudget[]>;
   updateBudget(id: string, patch: BudgetPatch): Promise<StoredBudget>;
   removeBudget(id: string): Promise<void>;
 }

@@ -9,18 +9,19 @@ function counter(): () => string {
 describe('expandEntry', () => {
   it('expense: 费用科目 +amount，资产账户 -amount，且平衡', () => {
     const t = expandEntry(
-      { kind: 'expense', date: '2026-05-03', amount: toMinor(30), accountId: 'bank', categoryId: 'food' },
+      { kind: 'expense', bookId: 'b1', date: '2026-05-03', amount: toMinor(30), accountId: 'bank', categoryId: 'food' },
       counter(),
     );
     expect(isBalanced(t.postings)).toBe(true);
     expect(t.postings).toHaveLength(2);
+    expect(t.bookId).toBe('b1');
     expect(t.postings.find((p) => p.accountId === 'food')!.amount).toBe(3000);
     expect(t.postings.find((p) => p.accountId === 'bank')!.amount).toBe(-3000);
   });
 
   it('income: 资产账户 +amount，收入科目 -amount', () => {
     const t = expandEntry(
-      { kind: 'income', date: '2026-05-01', amount: toMinor(5000), accountId: 'bank', categoryId: 'salary' },
+      { kind: 'income', bookId: 'b1', date: '2026-05-01', amount: toMinor(5000), accountId: 'bank', categoryId: 'salary' },
       counter(),
     );
     expect(isBalanced(t.postings)).toBe(true);
@@ -30,7 +31,7 @@ describe('expandEntry', () => {
 
   it('transfer: 转入 +amount，转出 -amount', () => {
     const t = expandEntry(
-      { kind: 'transfer', date: '2026-05-05', amount: toMinor(1000), fromAccountId: 'bank', toAccountId: 'alipay' },
+      { kind: 'transfer', bookId: 'b1', date: '2026-05-05', amount: toMinor(1000), fromAccountId: 'bank', toAccountId: 'alipay' },
       counter(),
     );
     expect(isBalanced(t.postings)).toBe(true);
@@ -42,13 +43,14 @@ describe('expandEntry', () => {
     const t = expandEntry(
       {
         kind: 'expense',
+        bookId: 'b1',
         date: '2026-05-03',
         amount: 3000,
         accountId: 'bank',
         categoryId: 'food',
         payee: '麦当劳',
         note: '午餐',
-        tags: ['personal'],
+        tags: ['daily'],
       },
       counter(),
     );
@@ -56,21 +58,30 @@ describe('expandEntry', () => {
     expect(t.postings.map((p) => p.id)).toEqual(['id2', 'id3']);
     expect(t.postings.every((p) => p.txnId === 'id1')).toBe(true);
     expect(t.payee).toBe('麦当劳');
-    expect(t.tags).toEqual(['personal']);
+    expect(t.tags).toEqual(['daily']);
   });
 
   it('拒绝非整数金额', () => {
     expect(() =>
-      expandEntry({ kind: 'expense', date: '2026-05-03', amount: 30.5, accountId: 'bank', categoryId: 'food' }, counter()),
+      expandEntry(
+        { kind: 'expense', bookId: 'b1', date: '2026-05-03', amount: 30.5, accountId: 'bank', categoryId: 'food' },
+        counter(),
+      ),
     ).toThrow();
   });
 
   it('拒绝非正数金额', () => {
     expect(() =>
-      expandEntry({ kind: 'expense', date: '2026-05-03', amount: 0, accountId: 'bank', categoryId: 'food' }, counter()),
+      expandEntry(
+        { kind: 'expense', bookId: 'b1', date: '2026-05-03', amount: 0, accountId: 'bank', categoryId: 'food' },
+        counter(),
+      ),
     ).toThrow();
     expect(() =>
-      expandEntry({ kind: 'expense', date: '2026-05-03', amount: -100, accountId: 'bank', categoryId: 'food' }, counter()),
+      expandEntry(
+        { kind: 'expense', bookId: 'b1', date: '2026-05-03', amount: -100, accountId: 'bank', categoryId: 'food' },
+        counter(),
+      ),
     ).toThrow();
   });
 });
