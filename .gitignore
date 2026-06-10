@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# build artifacts (Tauri etc., later)
+apps/*/src-tauri/target/
+
+# local data / secrets
+*.db
+*.sqlite
+.env
+.env.local

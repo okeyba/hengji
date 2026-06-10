@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>衡记 · 深入浅出的复式记账</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --surface:#fff; --ink:#0f1729; --ink-soft:#46546b; --muted:#8a94a6;
+    --line:#e7eaf0; --brand:#0e9f6e; --brand-700:#047a55; --brand-50:#e7f7f0;
+    --pos:#0e9f6e; --neg:#e5484d; --biz:#d97706; --biz-50:#fdf2e2; --invest:#4f46e5;
+    --shadow-sm:0 1px 2px rgba(16,24,40,.05);
+    --shadow:0 1px 3px rgba(16,24,40,.06),0 14px 34px -16px rgba(16,24,40,.22);
+    --radius:16px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 24px}
+  .btn{display:inline-flex;align-items:center;gap:8px;border:1px solid transparent;border-radius:10px;
+    padding:11px 18px;font-size:15px;font-weight:600;cursor:pointer;transition:.18s;white-space:nowrap}
+  .btn-primary{background:var(--brand);color:#fff;box-shadow:var(--shadow-sm)}
+  .btn-primary:hover{background:var(--brand-700);transform:translateY(-1px)}
+  .btn-ghost{background:#fff;color:var(--ink);border-color:var(--line)}
+  .btn-ghost:hover{border-color:#cdd3dd}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
+    padding:3px 9px;border-radius:999px;background:var(--biz-50);color:var(--biz)}
+  .eyebrow{color:var(--brand);font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+
+  /* NAV */
+  header.nav{position:sticky;top:0;z-index:50;background:rgba(245,246,248,.82);
+    backdrop-filter:saturate(160%) blur(10px);border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;height:64px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.01em}
+  .mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#13b87f,#047a55);
+    display:grid;place-items:center;color:#fff;font-size:17px;font-weight:800;box-shadow:var(--shadow-sm)}
+  .nav-links{display:flex;gap:28px;font-size:15px;color:var(--ink-soft);font-weight:500}
+  .nav-links a:hover{color:var(--ink)}
+  .nav-cta{display:flex;gap:10px;align-items:center}
+
+  /* HERO */
+  .hero{position:relative;overflow:hidden;padding:74px 0 40px}
+  .hero::before{content:"";position:absolute;inset:-30% -10% auto;height:560px;z-index:0;
+    background:radial-gradient(60% 60% at 70% 20%,rgba(14,159,110,.16),transparent 60%),
+               radial-gradient(50% 50% at 20% 0%,rgba(79,70,229,.10),transparent 60%)}
+  .hero-grid{position:relative;z-index:1;display:grid;grid-template-columns:minmax(0,0.95fr) minmax(0,1.15fr);
+    gap:48px;align-items:center}
+  .hero h1{font-size:46px;line-height:1.15;letter-spacing:-0.01em;font-weight:800;margin:14px 0 18px}
+  .hero h1 .hl{background:linear-gradient(120deg,var(--brand),#13b87f);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero p.lead{font-size:18px;color:var(--ink-soft);max-width:560px}
+  .hero-cta{display:flex;gap:12px;margin:26px 0 16px;flex-wrap:wrap}
+  .trust{display:flex;gap:18px;color:var(--muted);font-size:13.5px;flex-wrap:wrap}
+  .trust span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--brand)}
+
+  /* APP MOCKUP */
+  .appwin{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);overflow:hidden}
+  .appwin-bar{display:flex;align-items:center;gap:7px;padding:12px 16px;border-bottom:1px solid var(--line);background:#fbfcfd}
+  .tdot{width:11px;height:11px;border-radius:50%}
+  .tdot.r{background:#ff5f57}.tdot.y{background:#febc2e}.tdot.g{background:#28c840}
+  .appwin-bar .where{margin-left:10px;font-size:12.5px;color:var(--muted)}
+  .app{display:grid;grid-template-columns:200px 1fr;min-height:520px}
+  .side{border-right:1px solid var(--line);padding:16px 12px;background:#fbfcfd;display:flex;flex-direction:column;gap:4px}
+  .side .s-brand{display:flex;align-items:center;gap:8px;font-weight:800;font-size:15px;padding:6px 8px 12px}
+  .navi{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;font-size:14px;color:var(--ink-soft);font-weight:500}
+  .navi.active{background:var(--brand-50);color:var(--brand-700);font-weight:700}
+  .navi:hover:not(.active){background:#eef1f5}
+  .s-label{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.05em;padding:14px 10px 6px}
+  .acct{display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:8px;font-size:13px}
+  .acct:hover{background:#eef1f5}
+  .acct .nm{display:flex;align-items:center;gap:8px;color:var(--ink-soft)}
+  .acct .bal{font-variant-numeric:tabular-nums;font-weight:600}
+  .neg{color:var(--neg)} .pos{color:var(--pos)}
+  .main{padding:20px 22px;overflow:hidden}
+  .main-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .main-head h2{font-size:18px;font-weight:800}
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;font-size:12.5px}
+  .seg span{padding:6px 11px;color:var(--ink-soft)} .seg span.on{background:var(--ink);color:#fff}
+
+  .stats{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:12px;margin-bottom:16px}
+  .stat{border:1px solid var(--line);border-radius:12px;padding:13px 15px;background:#fff}
+  .stat.hero-stat{background:linear-gradient(135deg,#0e9f6e,#047a55);border:none;color:#fff}
+  .stat .k{font-size:12px;color:var(--muted);font-weight:600}
+  .stat.hero-stat .k{color:rgba(255,255,255,.85)}
+  .stat .v{font-size:23px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:3px}
+  .stat .v.sm{font-size:19px}
+  .stat .sub{font-size:11.5px;margin-top:2px}
+  .biz-v{color:var(--biz)}
+
+  .mid{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-bottom:16px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:15px 16px;background:#fff}
+  .card h3{font-size:13.5px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between}
+  .card h3 .mini{font-weight:600;color:var(--muted);font-size:11.5px}
+  .donut-row{display:flex;align-items:center;gap:18px}
+  .legend{display:flex;flex-direction:column;gap:9px;font-size:12.5px}
+  .legend i{width:9px;height:9px;border-radius:3px;display:inline-block;margin-right:8px}
+  .legend .lv{font-variant-numeric:tabular-nums;color:var(--muted);margin-left:6px}
+
+  /* quick entry */
+  .qtabs{display:flex;gap:6px;margin-bottom:12px}
+  .qtab{flex:1;text-align:center;padding:7px;border-radius:8px;font-size:13px;font-weight:600;border:1px solid var(--line);color:var(--ink-soft)}
+  .qtab.on{background:var(--neg);color:#fff;border-color:transparent}
+  .qamt{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;margin:4px 0 12px;color:var(--neg)}
+  .qrow{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:11px}
+  .qchip{font-size:12.5px;padding:5px 11px;border-radius:999px;border:1px solid var(--line);color:var(--ink-soft)}
+  .qchip.on{background:var(--brand-50);color:var(--brand-700);border-color:#bfe6d4;font-weight:600}
+  .qfield{display:flex;align-items:center;justify-content:space-between;font-size:13px;padding:9px 11px;border:1px solid var(--line);border-radius:9px;color:var(--ink-soft);margin-bottom:9px}
+
+  .txns .tx{display:flex;align-items:center;gap:12px;padding:10px 4px;border-top:1px solid var(--line)}
+  .txns .tx:first-child{border-top:none}
+  .avatar{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:17px;background:#f1f3f7;flex:none}
+  .tx .meta{flex:1;min-width:0}
+  .tx .t1{font-size:14px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .tx .t2{font-size:12px;color:var(--muted)}
+  .tx .amt{font-weight:700;font-variant-numeric:tabular-nums;font-size:14.5px}
+  .engine-note{font-size:11.5px;color:var(--muted);margin-top:12px;display:flex;align-items:center;gap:7px}
+
+  /* SECTIONS */
+  section.block{padding:74px 0}
+  .sec-head{text-align:center;max-width:680px;margin:0 auto 46px}
+  .sec-head h2{font-size:34px;font-weight:800;letter-spacing:-0.01em;margin:10px 0 12px}
+  .sec-head p{color:var(--ink-soft);font-size:17px}
+
+  /* 深入浅出 */
+  .dive{display:grid;grid-template-columns:1fr auto 1fr;gap:24px;align-items:center;max-width:920px;margin:0 auto}
+  .dive .panel{border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:var(--shadow-sm);overflow:hidden}
+  .panel .ph{padding:11px 16px;font-size:12.5px;font-weight:700;color:var(--muted);border-bottom:1px solid var(--line);background:#fbfcfd;display:flex;align-items:center;gap:8px}
+  .panel .pb{padding:18px 16px}
+  .single-entry{display:flex;align-items:center;gap:12px}
+  .single-entry .avatar{width:42px;height:42px;font-size:21px}
+  .single-entry .se-amt{margin-left:auto;font-weight:800;color:var(--neg);font-variant-numeric:tabular-nums;font-size:18px}
+  .arrow{font-size:26px;color:var(--brand);font-weight:700}
+  table.ledger{width:100%;border-collapse:collapse;font-size:13.5px}
+  table.ledger th{text-align:right;color:var(--muted);font-weight:600;font-size:12px;padding:4px 8px}
+  table.ledger th:first-child{text-align:left}
+  table.ledger td{padding:7px 8px;border-top:1px solid var(--line);font-variant-numeric:tabular-nums;text-align:right}
+  table.ledger td:first-child{text-align:left;color:var(--ink-soft)}
+  .balanced{text-align:center;font-size:12.5px;color:var(--brand-700);background:var(--brand-50);padding:8px;margin-top:2px;font-weight:600}
+  .dive-cap{text-align:center;color:var(--ink-soft);margin:30px auto 0;max-width:600px;font-size:15px}
+
+  /* 场景 / 功能 grid */
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .feat{border:1px solid var(--line);border-radius:14px;padding:24px;background:#fff;transition:.18s}
+  .feat:hover{box-shadow:var(--shadow);transform:translateY(-3px)}
+  .feat .ico{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-size:23px;margin-bottom:14px}
+  .feat h3{font-size:17px;font-weight:700;margin-bottom:7px;display:flex;align-items:center;gap:8px}
+  .feat p{color:var(--ink-soft);font-size:14.5px}
+  .tag-soon{font-size:10.5px;font-weight:700;color:var(--invest);background:#eceafe;padding:2px 7px;border-radius:999px}
+  .alt{background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+
+  /* pricing */
+  .prices{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;max-width:760px;margin:0 auto}
+  .price{border:1px solid var(--line);border-radius:16px;padding:28px;background:#fff;position:relative}
+  .price.feature{border-color:var(--brand);box-shadow:0 12px 30px -14px rgba(14,159,110,.5)}
+  .price .pname{font-weight:700;font-size:16px}
+  .price .amt{font-size:34px;font-weight:800;margin:10px 0 4px}
+  .price .amt small{font-size:15px;color:var(--muted);font-weight:600}
+  .price ul{list-style:none;margin:18px 0;display:flex;flex-direction:column;gap:10px;font-size:14.5px;color:var(--ink-soft)}
+  .price li{display:flex;gap:9px}
+  .price li::before{content:"✓";color:var(--brand);font-weight:800}
+  .ribbon{position:absolute;top:18px;right:18px;font-size:11px;font-weight:700;color:#fff;background:var(--brand);padding:3px 10px;border-radius:999px}
+
+  footer{background:#0f1729;color:#aeb8c8;padding:54px 0 30px;margin-top:10px}
+  footer .fgrid{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:24px;margin-bottom:34px}
+  footer h4{color:#fff;font-size:13px;margin-bottom:14px;letter-spacing:.04em}
+  footer a{display:block;font-size:14px;padding:5px 0;color:#aeb8c8}
+  footer a:hover{color:#fff}
+  footer .brand{color:#fff;margin-bottom:12px}
+  .fbar{border-top:1px solid #243049;padding-top:20px;display:flex;justify-content:space-between;font-size:13px;color:#7c899e;flex-wrap:wrap;gap:10px}
+
+  @media(max-width:920px){
+    .hero-grid,.mid,.dive,.prices{grid-template-columns:1fr}
+    .arrow{transform:rotate(90deg);justify-self:center}
+    .grid3{grid-template-columns:1fr}
+    .stats{grid-template-columns:1fr 1fr}
+    footer .fgrid{grid-template-columns:1fr 1fr}
+    .hero h1{font-size:34px}
+    .app{grid-template-columns:1fr}.side{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <div class="brand"><span class="mark">衡</span>衡记 <span style="font-weight:500;color:var(--muted);font-size:13px;margin-left:2px">Héng</span></div>
+    <nav class="nav-links">
+      <a href="#dive">核心理念</a>
+      <a href="#scenes">三大场景</a>
+      <a href="#features">功能</a>
+      <a href="#pricing">价格</a>
+      <a href="#opensource">开源</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="#">登录</a>
+      <a class="btn btn-primary" href="#pricing">免费下载</a>
+    </div>
+  </div>
+</header>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow">开源 · 本地优先</span>
+      <h1>把开支、生意、投资<br/>记进<span class="hl">同一本</span>清楚的账</h1>
+      <p class="lead">底层是严谨的复式记账引擎，表面只是「记一笔」。个人日常、小生意流水利润、投资账户——一处搞定。数据在你自己手里。</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#pricing">⬇ 免费下载本地版</a>
+        <a class="btn btn-ghost" href="#pricing">了解云同步</a>
+      </div>
+      <div class="trust">
+        <span><i class="dot"></i> 100% 本地优先</span>
+        <span><i class="dot"></i> 开源免费</span>
+        <span><i class="dot"></i> 复式记账内核</span>
+        <span><i class="dot"></i> 桌面 + 手机</span>
+      </div>
+    </div>
+
+    <!-- APP MOCKUP -->
+    <div class="appwin">
+      <div class="appwin-bar">
+        <span class="tdot r"></span><span class="tdot y"></span><span class="tdot g"></span>
+        <span class="where">衡记 — 总览</span>
+      </div>
+      <div class="app">
+        <aside class="side">
+          <div class="s-brand"><span class="mark" style="width:24px;height:24px;font-size:13px;border-radius:7px">衡</span> 衡记</div>
+          <div class="navi active">📊 总览</div>
+          <div class="navi">✏️ 记一笔</div>
+          <div class="navi">📒 流水</div>
+          <div class="navi">📈 报表</div>
+          <div class="navi">🎯 预算</div>
+          <div class="s-label">账户</div>
+          <div class="acct"><span class="nm">🏦 招行卡</span><span class="bal">¥2,970</span></div>
+          <div class="acct"><span class="nm">💙 支付宝</span><span class="bal">¥3,000</span></div>
+          <div class="acct"><span class="nm">📈 投资账户</span><span class="bal">¥1,000</span></div>
+          <div class="acct"><span class="nm">💳 信用卡</span><span class="bal neg">−¥800</span></div>
+        </aside>
+
+        <main class="main">
+          <div class="main-head">
+            <h2>总览</h2>
+            <div class="seg"><span>本周</span><span class="on">本月</span><span>本年</span></div>
+          </div>
+
+          <div class="stats">
+            <div class="stat hero-stat">
+              <div class="k">净资产</div>
+              <div class="v">¥61,700</div>
+              <div class="sub">▲ 本月 +¥6,170</div>
+            </div>
+            <div class="stat"><div class="k">本月收入</div><div class="v sm pos">¥7,000</div></div>
+            <div class="stat"><div class="k">本月支出</div><div class="v sm neg">¥830</div></div>
+            <div class="stat"><div class="k">小生意利润 <span class="chip">生意</span></div><div class="v sm biz-v">¥1,200</div></div>
+          </div>
+
+          <div class="mid">
+            <div class="card">
+              <h3>资产分布 <span class="mini">总 ¥6,970（流动）</span></h3>
+              <div class="donut-row">
+                <svg width="120" height="120" viewBox="0 0 36 36">
+                  <g transform="rotate(-90 18 18)">
+                    <circle cx="18" cy="18" r="15.915" fill="none" stroke="#eef1f5" stroke-width="4.2"/>
+                    <circle cx="18" cy="18" r="15.915" fill="none" stroke="#0e9f6e" stroke-width="4.2" stroke-dasharray="43 57" stroke-dashoffset="0"/>
+                    <circle cx="18" cy="18" r="15.915" fill="none" stroke="#4f46e5" stroke-width="4.2" stroke-dasharray="42.6 57.4" stroke-dashoffset="-43"/>
+                    <circle cx="18" cy="18" r="15.915" fill="none" stroke="#d97706" stroke-width="4.2" stroke-dasharray="14.4 85.6" stroke-dashoffset="-85.6"/>
+                  </g>
+                  <text x="18" y="17.5" text-anchor="middle" font-size="4.6" font-weight="700" fill="#0f1729">¥6,970</text>
+                  <text x="18" y="22" text-anchor="middle" font-size="2.6" fill="#8a94a6">流动资产</text>
+                </svg>
+                <div class="legend">
+                  <div><i style="background:#0e9f6e"></i>支付宝<span class="lv">¥3,000</span></div>
+                  <div><i style="background:#4f46e5"></i>招行卡<span class="lv">¥2,970</span></div>
+                  <div><i style="background:#d97706"></i>投资账户<span class="lv">¥1,000</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>记一笔</h3>
+              <div class="qtabs"><div class="qtab on">支出</div><div class="qtab">收入</div><div class="qtab">转账</div></div>
+              <div class="qamt">−¥30.00</div>
+              <div class="qrow">
+                <span class="qchip on">🍜 餐饮</span><span class="qchip">🚕 交通</span><span class="qchip">🛒 购物</span><span class="qchip">＋</span>
+              </div>
+              <div class="qfield"><span>账户</span><span style="color:var(--ink);font-weight:600">🏦 招行卡 ▾</span></div>
+              <div class="qfield"><span>标签</span><span style="color:var(--ink);font-weight:600">个人</span></div>
+              <a class="btn btn-primary" style="width:100%;justify-content:center" href="#">保存</a>
+            </div>
+          </div>
+
+          <div class="card txns">
+            <h3>最近交易</h3>
+            <div class="tx"><div class="avatar">💰</div><div class="meta"><div class="t1">工资</div><div class="t2">招行卡 · 05-01</div></div><div class="amt pos">+¥5,000.00</div></div>
+            <div class="tx"><div class="avatar">🧾</div><div class="meta"><div class="t1">营业收入 <span class="chip">生意</span></div><div class="t2">支付宝 · 06-02</div></div><div class="amt pos">+¥2,000.00</div></div>
+            <div class="tx"><div class="avatar">📦</div><div class="meta"><div class="t1">进货成本 <span class="chip">生意</span></div><div class="t2">信用卡 · 06-03</div></div><div class="amt neg">−¥800.00</div></div>
+            <div class="tx"><div class="avatar">🔁</div><div class="meta"><div class="t1">转账 → 投资账户</div><div class="t2">招行卡 · 05-10</div></div><div class="amt" style="color:var(--ink-soft)">¥1,000.00</div></div>
+            <div class="tx"><div class="avatar">🍜</div><div class="meta"><div class="t1">餐饮</div><div class="t2">招行卡 · 05-03</div></div><div class="amt neg">−¥30.00</div></div>
+          </div>
+          <div class="engine-note">⚙️ 页面数据由 <b style="color:var(--ink-soft)">@app/core</b> 复式引擎实际算出（净资产 / 利润 / 余额均为引擎输出）</div>
+        </main>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 深入浅出 -->
+<section class="block" id="dive">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">深入浅出</span>
+      <h2>你只管「记一笔」，借贷分录引擎在背后</h2>
+      <p>消费级的简单，专业级的严谨——两者不必二选一。</p>
+    </div>
+    <div class="dive">
+      <div class="panel">
+        <div class="ph">😀 你看到的（单式）</div>
+        <div class="pb">
+          <div class="single-entry">
+            <div class="avatar">🍜</div>
+            <div><div style="font-weight:700">餐饮</div><div style="font-size:12.5px;color:var(--muted)">招行卡 · 个人</div></div>
+            <div class="se-amt">−¥30</div>
+          </div>
+        </div>
+      </div>
+      <div class="arrow">➜</div>
+      <div class="panel">
+        <div class="ph">🔧 系统记的（复式分录）</div>
+        <div class="pb">
+          <table class="ledger">
+            <tr><th>科目</th><th>借</th><th>贷</th></tr>
+            <tr><td>餐饮（费用）</td><td>30.00</td><td>—</td></tr>
+            <tr><td>招行卡（资产）</td><td>—</td><td>30.00</td></tr>
+          </table>
+          <div class="balanced">✓ 借贷平衡 · 永远等式成立</div>
+        </div>
+      </div>
+    </div>
+    <p class="dive-cap">正因为底层是复式记账，投资盈亏、账户转账、小生意利润才能被<b>严谨地算对</b>——而你完全感觉不到借贷的存在。</p>
+  </div>
+</section>
+
+<!-- 三大场景 -->
+<section class="block alt" id="scenes">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">一处搞定</span>
+      <h2>三类账，混着记也分得清</h2>
+      <p>个人和生意常共用一张卡——用标签区分，利润表一键过滤。</p>
+    </div>
+    <div class="grid3">
+      <div class="feat">
+        <div class="ico" style="background:var(--brand-50)">🧾</div>
+        <h3>个人日常开支</h3>
+        <p>收支流水、分类、账户、预算。快速「记一笔」，月度收支与净资产一目了然。</p>
+      </div>
+      <div class="feat">
+        <div class="ico" style="background:var(--biz-50)">💼</div>
+        <h3>小生意流水利润</h3>
+        <p>收款进同一张卡也不怕——打上「生意」标签，营收、成本、利润自动单独成表。</p>
+      </div>
+      <div class="feat">
+        <div class="ico" style="background:#eceafe">📈</div>
+        <h3>投资账户 <span class="tag-soon">v0.3 完整版</span></h3>
+        <p>先把投资账户纳入净资产总览；持仓、估值、已/未实现损益与多币种随后到位。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 功能 -->
+<section class="block" id="features">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">功能</span>
+      <h2>记得快，看得清，守得住</h2>
+    </div>
+    <div class="grid3">
+      <div class="feat"><div class="ico" style="background:var(--brand-50)">🗣️</div><h3>AI / 语音记账 <span class="tag-soon">规划中</span></h3><p>「昨天打车30」一句话或一段语音，自动解析金额、分类、账户。可选本地小模型，离线也能用。</p></div>
+      <div class="feat"><div class="ico" style="background:var(--biz-50)">📥</div><h3>账单导入 <span class="tag-soon">规划中</span></h3><p>支付宝 / 微信 / 银行流水，截图或表格，自动归类，告别纯手工录入。</p></div>
+      <div class="feat"><div class="ico" style="background:#eceafe">📊</div><h3>报表图表</h3><p>趋势、分类占比、月度对比、净资产曲线，看清钱去哪了、生意赚不赚。</p></div>
+      <div class="feat"><div class="ico" style="background:var(--brand-50)">🎯</div><h3>预算与提醒</h3><p>按分类设月度预算，超支提醒，月底自动结算回顾。</p></div>
+      <div class="feat"><div class="ico" style="background:var(--biz-50)">💻</div><h3>桌面 + 手机</h3><p>一套内核多端复用，桌面先行，手机随后。本地数据库，离线随手记。</p></div>
+      <div class="feat"><div class="ico" style="background:#eceafe">🔒</div><h3>本地优先 · 可选云同步</h3><p>默认数据只在你设备上。需要多端实时同步时，再开通加密云同步。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 价格 -->
+<section class="block alt" id="pricing">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">价格</span>
+      <h2>本地永久免费，云同步按需付费</h2>
+      <p>开源（open-core）：核心能力免费且开放，只有跨端云同步是增值项。</p>
+    </div>
+    <div class="prices">
+      <div class="price">
+        <div class="pname">本地版</div>
+        <div class="amt">¥0 <small>/ 永久</small></div>
+        <ul>
+          <li>全部记账、账户、标签</li>
+          <li>报表、预算、投资总览</li>
+          <li>数据 100% 在本机</li>
+          <li>桌面 + 手机本地使用</li>
+          <li>开源、可自托管</li>
+        </ul>
+        <a class="btn btn-ghost" style="width:100%;justify-content:center" href="#">⬇ 免费下载</a>
+      </div>
+      <div class="price feature">
+        <div class="ribbon">推荐</div>
+        <div class="pname">云同步版</div>
+        <div class="amt">¥18 <small>/ 月</small></div>
+        <ul>
+          <li>本地版全部功能</li>
+          <li>多设备实时同步</li>
+          <li>端到端加密云备份</li>
+          <li>AI 云端增强（规划中）</li>
+          <li>优先支持</li>
+        </ul>
+        <a class="btn btn-primary" style="width:100%;justify-content:center" href="#">开通云同步</a>
+      </div>
+    </div>
+    <p style="text-align:center;color:var(--muted);font-size:12.5px;margin-top:18px">* 价格为占位示意，最终以正式发布为准。</p>
+  </div>
+</section>
+
+<!-- 开源 CTA -->
+<section class="block" id="opensource">
+  <div class="wrap" style="text-align:center;max-width:720px">
+    <div class="ico" style="background:var(--brand-50);width:56px;height:56px;border-radius:14px;display:grid;place-items:center;font-size:28px;margin:0 auto 18px">⭐</div>
+    <h2 style="font-size:30px;font-weight:800;margin-bottom:12px">开源、本地优先，数据永远是你的</h2>
+    <p style="color:var(--ink-soft);font-size:17px;margin-bottom:24px">代码公开可审计，可自托管。不锁定、不偷看，账本握在自己手里。</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      <a class="btn btn-primary" href="#">★ GitHub Star</a>
+      <a class="btn btn-ghost" href="#">阅读文档</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="fgrid">
+      <div>
+        <div class="brand" style="display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px"><span class="mark">衡</span>衡记 Héng</div>
+        <p style="font-size:14px;max-width:280px">深入浅出的复式记账。个人开支 · 小生意 · 投资，一处记清。</p>
+      </div>
+      <div><h4>产品</h4><a href="#features">功能</a><a href="#pricing">价格</a><a href="#">下载</a><a href="#">更新日志</a></div>
+      <div><h4>资源</h4><a href="#">文档</a><a href="#">GitHub</a><a href="#">自托管指南</a><a href="#">API</a></div>
+      <div><h4>关于</h4><a href="#">隐私</a><a href="#">开源许可证</a><a href="#">联系</a></div>
+    </div>
+    <div class="fbar">
+      <span>© 2026 衡记 · 演示样稿（产品名与定价均为占位）</span>
+      <span>开源 · 本地优先 · 复式记账内核</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
