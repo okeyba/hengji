@@ -9,8 +9,9 @@ import Dashboard from './views/Dashboard';
 import Transactions from './views/Transactions';
 import Budgets from './views/Budgets';
 import Invest from './views/Invest';
+import Accounts from './views/Accounts';
 
-type View = 'dashboard' | 'txns' | 'budgets' | 'invest';
+type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts';
 
 export interface AppData {
   repo: Repository;
@@ -28,15 +29,18 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['dashboard', '总览'],
     ['txns', '流水'],
     ['budgets', '预算'],
+    ['accounts', '账户'],
   ],
   business: [
     ['dashboard', '总览'],
     ['txns', '流水'],
     ['budgets', '预算'],
+    ['accounts', '账户'],
   ],
   investment: [
     ['invest', '投资'],
     ['txns', '流水'],
+    ['accounts', '账户'],
   ],
 };
 
@@ -201,6 +205,7 @@ export default function App() {
             {view === 'txns' && <Transactions data={data} />}
             {view === 'budgets' && <Budgets data={data} />}
             {view === 'invest' && <Invest data={data} />}
+            {view === 'accounts' && <Accounts data={data} />}
           </>
         )}
       </main>

@@ -156,6 +156,10 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .bname { font-weight: 600; font-size: 14px; flex: 1; }
 .bnum { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .bnum.neg { color: var(--neg); font-weight: 600; }
+.arow-btns { display: flex; gap: 4px; flex: none; }
+.lnk { font-size: 12.5px; color: var(--muted); padding: 6px 10px; border-radius: 8px; }
+.lnk:hover { background: #eef1f5; color: var(--ink-soft); }
+.lnk.danger:hover { color: var(--neg); background: #fdecec; }
 .bar { height: 8px; border-radius: 999px; background: #eef1f5; overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--brand); border-radius: 999px; }
 .bar i.over { background: var(--neg); }
