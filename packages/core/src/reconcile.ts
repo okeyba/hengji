@@ -23,3 +23,17 @@ export function clearedBalance(txns: Transaction[], accountId: string): number {
 export function reconcileDifference(statementBalance: number, checkedSum: number): number {
   return statementBalance - checkedSum;
 }
+
+/**
+ * 某账户未核销分录数——上次对账后新增/未对的笔数。
+ * 0 = 该账户已全部核销（本期已对账的判据）。
+ */
+export function unclearedCount(txns: Transaction[], accountId: string): number {
+  let n = 0;
+  for (const t of txns) {
+    for (const p of t.postings) {
+      if (p.accountId === accountId && !p.cleared) n++;
+    }
+  }
+  return n;
+}

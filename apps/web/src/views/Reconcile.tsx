@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { accountBalance, adjustBalanceEntry, fromMinor, toMinor } from '@app/core';
+import { accountBalance, adjustBalanceEntry, toMinor, unclearedCount } from '@app/core';
 import type { StoredReconciliation } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
@@ -173,11 +173,15 @@ export default function Reconcile({ data }: { data: AppData }) {
           <label>
             对账账户
             <select value={accountId} onChange={(e) => selectAccount(e.target.value)}>
-              {recAccounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
+              {recAccounts.map((a) => {
+                const n = unclearedCount(txns, a.id);
+                return (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                    {n > 0 ? ` · ${n} 待核销` : ' · 已全核销'}
+                  </option>
+                );
+              })}
             </select>
           </label>
           <label>
@@ -199,6 +203,10 @@ export default function Reconcile({ data }: { data: AppData }) {
         </div>
         <div className="rec-hint muted small">
           账户当前余额 {fmtMoney(currentBalance)}
+          {(() => {
+            const n = unclearedCount(txns, accountId);
+            return n > 0 ? <> · {n} 笔待核销</> : <> · 已全部核销 ✓</>;
+          })()}
           {lastRec && <> · 上次对账 {lastRec.statementDate}（{fmtMoney(lastRec.statementBalance)}）</>}
         </div>
       </div>

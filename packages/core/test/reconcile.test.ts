@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clearedBalance, reconcileDifference } from '../src/index';
+import { clearedBalance, reconcileDifference, unclearedCount } from '../src/index';
 import type { Transaction } from '../src/index';
 
 const B = 'b1';
@@ -47,5 +47,14 @@ describe('reconcile', () => {
     expect(reconcileDifference(497000, 497000)).toBe(0); // 账实相符
     expect(reconcileDifference(488200, 497000)).toBe(-8800); // 漏勾一笔 88 支出 → 负差
     expect(reconcileDifference(500000, 497000)).toBe(3000); // 多了 30 → 正差
+  });
+
+  it('unclearedCount 数未核销分录（0 = 本期已对账）', () => {
+    expect(unclearedCount(txns, 'bank')).toBe(1); // t3 的 bank 腿未核销
+    expect(unclearedCount(txns, 'salary')).toBe(1); // t1 的 salary 腿未核销
+    expect(unclearedCount(txns, 'food')).toBe(2); // t2/t3 的 food 腿都未核销
+    // 全核销后为 0
+    const allCleared = txns.map((t) => ({ ...t, postings: t.postings.map((p) => ({ ...p, cleared: true })) }));
+    expect(unclearedCount(allCleared, 'bank')).toBe(0);
   });
 });

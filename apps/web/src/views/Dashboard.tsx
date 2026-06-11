@@ -1,4 +1,4 @@
-import { accountBalance, incomeExpense, netWorth } from '@app/core';
+import { accountBalance, incomeExpense, netWorth, unclearedCount } from '@app/core';
 import type { AppData } from '../App';
 import { currentMonth, fmtMoney } from '../format';
 import { receivableAccountIds, receivableSummary } from '../biz';
@@ -65,12 +65,23 @@ export default function Dashboard({ data }: { data: AppData }) {
   const netLabel = book.type === 'business' ? '本月利润' : '本月结余';
   const recv = book.type === 'business' ? receivableSummary(accounts, txns) : null;
 
+  // 滚动对账状态：仅对「已开始对账」的账本显示（有任一已核销分录），免扰不对账的用户。
+  const hasReconciled = txns.some((t) => t.postings.some((p) => p.cleared));
+  const pendingAccts = accounts
+    .filter((a) => a.type === 'asset' || a.type === 'liability')
+    .filter((a) => unclearedCount(txns, a.id) > 0).length;
+
   return (
     <>
       <div className="main-head">
         <h2>{book.name} · 总览</h2>
         <span className="muted">
           {basis === 'cash' && <span className="basis-tag">收付实现制</span>}
+          {hasReconciled && (
+            <span className={`recon-badge${pendingAccts === 0 ? ' ok' : ''}`}>
+              {pendingAccts === 0 ? '本期已对账 ✓' : `${pendingAccts} 个账户待对账`}
+            </span>
+          )}
           {month}
         </span>
       </div>

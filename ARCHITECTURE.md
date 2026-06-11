@@ -67,8 +67,9 @@
 
 **原则**：发现差额**不直接塞调整**，而是逐笔核对找出漏记/多记/记错并改正（补录/编辑/删除），调整降级为"查不到差错"的逃生口。GnuCash/Actual/YNAB 同路。
 
-- **✅ 已落地（核心闭环）**：`core/reconcile.ts`（`clearedBalance`/`reconcileDifference`）；store M7（`postings.cleared` 列 + `reconciliations` 表 + `setPostingsCleared`/`addReconciliation`/`listReconciliations`，三实现+契约）；web `views/Reconcile.tsx` + 各账本「对账」tab。**流程**：选账户(资产/负债)→填对账单余额(有符号，负债欠款记负)→该账户流水**逐笔勾选**(已核销的预勾)→实时「已勾选合计」与「差额」→差额=0 才能「完成对账」(写入勾选全集为 cleared + 记一条 `Reconciliation` 历史，显示"上次对账")。**盘盈盘亏逃生口**：差额≠0 时一键 `adjustBalanceEntry` 记入「盘盈盘亏」(income，按需自建)并自动勾选对平。`Posting.cleared` 为可选字段(缺省 false)，不动既有 entry 构造器。
-- **⏳ 待补（已记 followups）**：① 对账**周期+提前提醒**设置(复用 settings 表) + 打开时弹横幅；② 滚动**「本期已对账」**徽章(账户全核完→账本本期已对账)；③ **已核销分录被改/删时弹提醒**(改 TxnRow/删除流，防静默打散已完成对账)；④ 补录/改金额纠错目前走现成「流水/记一笔」视图，未在对账页内联。
+- **✅ 已落地（核心闭环）**：`core/reconcile.ts`（`clearedBalance`/`reconcileDifference`/`unclearedCount`）；store M7（`postings.cleared` 列 + `reconciliations` 表 + `setPostingsCleared`/`addReconciliation`/`listReconciliations`，三实现+契约）；web `views/Reconcile.tsx` + 各账本「对账」tab。**流程**：选账户(资产/负债，下拉带 N 待核销)→填对账单余额(有符号，负债欠款记负)→该账户流水**逐笔勾选**(已核销的预勾)→实时「已勾选合计」与「差额」→差额=0 才能「完成对账」(写入勾选全集为 cleared + 记一条 `Reconciliation` 历史，显示"上次对账")。**盘盈盘亏逃生口**：差额≠0 时一键 `adjustBalanceEntry` 记入「盘盈盘亏」(income，按需自建)并自动勾选对平。`Posting.cleared` 为可选字段(缺省 false)，不动既有 entry 构造器。
+- **✅ 补强（v0.2）**：① **周期+提前提醒**(settings 表 per-book `reconcileDay`/`reconcileLead`)，设置页配置 + 进入窗口且仍有未核销时账本顶部弹横幅(去对账/稍后，已对账不扰，会话级 dismiss)；② **滚动「本期已对账」徽章**(Dashboard，仅对已开始对账的账本显示，全核销 ✓ / N 个账户待对账)；③ **删除已核销分录提醒**(TxnRow 检测 `cleared` 改提示文案)。
+- **⏳ 仍待补**：① 补录/改金额纠错目前走现成「流水/记一笔」视图，未在对账页内联；② 编辑交易(若后续加编辑流)也应弹已核销提醒(当前只 TxnRow 删除有)。
 - **数据**：`Reconciliation` 会话只存「已完成」记录(审计 + 上次对账基线)；勾选中途状态活在 UI(中断不持久，MVP 取舍)。`setPostingsCleared` 直接按 posting id 批量置位，未 bump 父交易 updatedAt(同步纪律待 D 期统一)。多币种账户按原币对(多币种期处理)。
 
 ## 记账口径：权责发生制 / 收付实现制（设置可切换，✅ 已落地 v0.2）

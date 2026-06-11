@@ -28,7 +28,11 @@ export default function TxnRow({
           className="del"
           title="删除"
           onClick={async () => {
-            if (confirm('删除这笔交易？')) {
+            const reconciled = txn.postings.some((p) => p.cleared);
+            const prompt = reconciled
+              ? '这笔交易含已核销分录，删除会打散已完成的对账（届时需重新对账）。确定删除？'
+              : '删除这笔交易？';
+            if (confirm(prompt)) {
               await data.repo.softDeleteTransaction(txn.id);
               await data.reload();
             }

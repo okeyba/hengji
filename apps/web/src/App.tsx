@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { accountBalance } from '@app/core';
+import { accountBalance, unclearedCount } from '@app/core';
 import type { BookType } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredSetting, StoredTransaction } from '@app/store';
 import { BOOK_META, createBookWithChart, isDesktop, ready } from './db';
 import { fmtMoney } from './format';
+import { reconcileDayOf, reconcileLeadOf, reconcileTargetDate, reconcileWindowOpen } from './settings';
 import OverviewAll from './views/OverviewAll';
 import Dashboard from './views/Dashboard';
 import Transactions from './views/Transactions';
@@ -72,6 +73,7 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const [nbName, setNbName] = useState('');
   const [nbType, setNbType] = useState<BookType>('personal');
+  const [reconDismissed, setReconDismissed] = useState<Set<string>>(new Set());
 
   async function loadFrom(r: Repository): Promise<void> {
     const [bk, a, t, b, s] = await Promise.all([
@@ -106,6 +108,18 @@ export default function App() {
     [accounts, txns, budgets, settings, cur],
   );
 
+  // 对账提醒：已配置对账日 + 进入提前窗口 + 该账本仍有未核销分录（已对账则不扰）。
+  // 须在任何提前 return 之前调用，保证 Hook 顺序稳定。
+  const reconReminder = useMemo(() => {
+    if (!curBook) return null;
+    const day = reconcileDayOf(scoped.settings, curBook.id);
+    if (!day || !reconcileWindowOpen(new Date(), day, reconcileLeadOf(scoped.settings, curBook.id))) return null;
+    const hasPending = scoped.accounts
+      .filter((a) => a.type === 'asset' || a.type === 'liability')
+      .some((a) => unclearedCount(scoped.txns, a.id) > 0);
+    return hasPending ? reconcileTargetDate(new Date(), day) : null;
+  }, [curBook, scoped.settings, scoped.accounts, scoped.txns]);
+
   if (!repo) return <div className="splash">账本加载中…</div>;
 
   function openBook(id: 'all' | string, type?: BookType): void {
@@ -137,6 +151,7 @@ export default function App() {
     ? { repo, book: curBook, ...scoped, reload: () => loadFrom(repo) }
     : null;
   const tabs = curBook ? TABS[curBook.type] : [];
+  const showReminder = reconReminder && curBook && !reconDismissed.has(curBook.id);
 
   return (
     <div className="app">
@@ -213,6 +228,22 @@ export default function App() {
           <OverviewAll books={books} accounts={accounts} txns={txns} settings={settings} onOpen={openBook} />
         ) : (
           <>
+            {showReminder && (
+              <div className="recon-banner">
+                <span>📋 本月对账日 {reconReminder} 临近，建议核对各账户余额。</span>
+                <div className="rb-actions">
+                  <button className="btn btn-primary rb-go" onClick={() => setView('reconcile')}>
+                    去对账
+                  </button>
+                  <button
+                    className="rb-x"
+                    onClick={() => setReconDismissed((s) => new Set(s).add(curBook!.id))}
+                  >
+                    稍后
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="book-head">
               <div className="seg">
                 {tabs.map(([v, label]) => (

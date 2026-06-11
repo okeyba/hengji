@@ -1,7 +1,14 @@
 import { useState } from 'react';
 import type { AccountingBasis } from '@app/core';
 import type { AppData } from '../App';
-import { BASIS_KEY, basisOf } from '../settings';
+import {
+  BASIS_KEY,
+  RECON_DAY_KEY,
+  RECON_LEAD_KEY,
+  basisOf,
+  reconcileDayOf,
+  reconcileLeadOf,
+} from '../settings';
 
 const OPTIONS: Array<{ value: AccountingBasis; label: string; desc: string }> = [
   { value: 'accrual', label: '权责发生制', desc: '订单完成即确认收入（含未收的赊账）。正规、贴资产负债表。' },
@@ -11,6 +18,8 @@ const OPTIONS: Array<{ value: AccountingBasis; label: string; desc: string }> = 
 export default function Settings({ data }: { data: AppData }) {
   const { repo, book, settings, reload } = data;
   const basis = basisOf(settings, book.id);
+  const reconDay = reconcileDayOf(settings, book.id);
+  const reconLead = reconcileLeadOf(settings, book.id);
   const [saving, setSaving] = useState(false);
 
   async function pick(v: AccountingBasis): Promise<void> {
@@ -18,6 +27,17 @@ export default function Settings({ data }: { data: AppData }) {
     setSaving(true);
     try {
       await repo.setSetting(book.id, BASIS_KEY, v);
+      await reload();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function save(key: string, value: string): Promise<void> {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await repo.setSetting(book.id, key, value);
       await reload();
     } finally {
       setSaving(false);
@@ -58,6 +78,37 @@ export default function Settings({ data }: { data: AppData }) {
             本账本收入本就是收到即记（无应收账款），两种口径结果一致。此设置主要用于有赊账的生意账本。
           </p>
         )}
+      </div>
+
+      <div className="card">
+        <h3>对账提醒</h3>
+        <p className="muted small">设定每月对账日后，临近时在账本顶部提醒去「对账」页核对；已全部核销则不打扰。</p>
+        <div className="rec-setup">
+          <label>
+            对账日
+            <select value={reconDay} onChange={(e) => void save(RECON_DAY_KEY, e.target.value)} disabled={saving}>
+              <option value="">关闭提醒</option>
+              <option value="last">每月最后一天</option>
+              {Array.from({ length: 28 }, (_, i) => String(i + 1)).map((d) => (
+                <option key={d} value={d}>
+                  每月 {d} 日
+                </option>
+              ))}
+            </select>
+          </label>
+          {reconDay !== '' && (
+            <label>
+              提前提醒
+              <select value={String(reconLead)} onChange={(e) => void save(RECON_LEAD_KEY, e.target.value)} disabled={saving}>
+                {[0, 1, 2, 3, 5, 7].map((n) => (
+                  <option key={n} value={String(n)}>
+                    {n === 0 ? '当天' : `提前 ${n} 天`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </div>
     </>
   );

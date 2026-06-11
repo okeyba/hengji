@@ -1,5 +1,6 @@
 import type { AccountingBasis } from '@app/core';
 import type { StoredSetting } from '@app/store';
+import { localISO } from './format';
 
 /**
  * 设置读取助手（web 层）：把通用 KV 设置翻译成有类型的取值。
@@ -16,4 +17,43 @@ export const DEFAULT_BASIS: AccountingBasis = 'accrual';
 export function basisOf(settings: StoredSetting[], bookId: string): AccountingBasis {
   const row = settings.find((s) => s.scope === bookId && s.key === BASIS_KEY);
   return row?.value === 'cash' ? 'cash' : DEFAULT_BASIS;
+}
+
+// —— 对账提醒（per-book）——
+/** 对账日：''=关闭 / 'last'=每月最后一天 / '1'..'28'=每月该日。 */
+export const RECON_DAY_KEY = 'reconcileDay';
+/** 提前提醒天数。 */
+export const RECON_LEAD_KEY = 'reconcileLead';
+export const DEFAULT_RECON_LEAD = 3;
+
+export function reconcileDayOf(settings: StoredSetting[], bookId: string): string {
+  return settings.find((s) => s.scope === bookId && s.key === RECON_DAY_KEY)?.value ?? '';
+}
+
+export function reconcileLeadOf(settings: StoredSetting[], bookId: string): number {
+  const v = settings.find((s) => s.scope === bookId && s.key === RECON_LEAD_KEY)?.value;
+  const n = v ? Number(v) : DEFAULT_RECON_LEAD;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECON_LEAD;
+}
+
+/** 本月对账目标日 YYYY-MM-DD；day='last'→当月最后一天，数字日超过当月天数则取最后一天。''→null。 */
+export function reconcileTargetDate(today: Date, day: string): string | null {
+  if (!day) return null;
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  const d = day === 'last' ? lastDay : Math.min(Math.max(Math.trunc(Number(day)), 1), lastDay);
+  if (!Number.isFinite(d)) return null;
+  return localISO(new Date(y, m, d));
+}
+
+/** 今天是否进入提醒窗口 [目标日−lead, 目标日]（闭区间，按本地日期比较）。 */
+export function reconcileWindowOpen(today: Date, day: string, lead: number): boolean {
+  const target = reconcileTargetDate(today, day);
+  if (!target) return false;
+  const [y, mo, d] = target.split('-').map(Number);
+  const start = new Date(y!, mo! - 1, d! - lead); // 负日 JS 自动回退到上月，跨月窗口安全
+  const end = new Date(y!, mo! - 1, d!);
+  const t = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  return t >= start && t <= end;
 }
