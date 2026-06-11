@@ -1,6 +1,7 @@
 import { accountBalance, incomeExpense, netWorth } from '@app/core';
 import type { AppData } from '../App';
 import { currentMonth, fmtMoney } from '../format';
+import { receivableSummary } from '../biz';
 import TxnRow from '../components/TxnRow';
 import QuickEntry from './QuickEntry';
 
@@ -59,6 +60,7 @@ export default function Dashboard({ data }: { data: AppData }) {
     .filter((s) => s.value > 0);
   const totalAssets = slices.reduce((s, x) => s + x.value, 0);
   const netLabel = book.type === 'business' ? '本月利润' : '本月结余';
+  const recv = book.type === 'business' ? receivableSummary(accounts, txns) : null;
 
   return (
     <>
@@ -90,6 +92,13 @@ export default function Dashboard({ data }: { data: AppData }) {
             资产分布 <span className="mini">合计 {fmtMoney(totalAssets)}</span>
           </h3>
           <Donut slices={slices} total={totalAssets} />
+          {recv && (recv.receivable > 0 || recv.prepaid > 0) && (
+            <div className="recv-line">
+              客户往来：
+              <span className={recv.receivable > 0 ? 'neg' : 'muted'}>应收 {fmtMoney(recv.receivable)}</span>
+              {recv.prepaid > 0 && <span className="recv-pre"> · 预收 {fmtMoney(recv.prepaid)}</span>}
+            </div>
+          )}
         </div>
         <QuickEntry data={data} />
       </div>

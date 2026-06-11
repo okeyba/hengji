@@ -13,10 +13,26 @@ const REVENUE = '营业收入';
 
 const arName = (customerName: string): string => `${AR_PARENT}/${customerName}`;
 
-/** 某客户当前应收余额（欠款）= 其应收子科目余额；无子科目则为 0。 */
+/** 某客户当前应收余额（净额）= 其应收子科目余额；正=客户欠你，负=你欠客户（预收）。 */
 export function receivableBalance(accounts: StoredAccount[], txns: StoredTransaction[], customerName: string): number {
   const ar = accounts.find((a) => a.name === arName(customerName));
   return ar ? accountBalance(txns, ar.id) : 0;
+}
+
+/** 全账本客户往来汇总：应收合计（别人欠你）/ 预收合计（你欠别人，多付的钱）。遍历所有「应收账款/*」子科目。 */
+export function receivableSummary(
+  accounts: StoredAccount[],
+  txns: StoredTransaction[],
+): { receivable: number; prepaid: number } {
+  let receivable = 0;
+  let prepaid = 0;
+  for (const a of accounts) {
+    if (!a.name.startsWith(`${AR_PARENT}/`)) continue;
+    const bal = accountBalance(txns, a.id);
+    if (bal > 0) receivable += bal;
+    else if (bal < 0) prepaid += -bal;
+  }
+  return { receivable, prepaid };
 }
 
 /** 找/建顶层「应收账款」资产父科目，返回 id。 */

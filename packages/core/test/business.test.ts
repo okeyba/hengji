@@ -4,6 +4,7 @@ import {
   orderTotal,
   orderRevenueEntry,
   collectionEntry,
+  allocateCustomerPayments,
   accountBalance,
   isBalanced,
   toMinor,
@@ -80,5 +81,48 @@ describe('应收余额 = 应收子科目余额（从分录聚合）', () => {
     expect(accountBalance(txns, 'ar-c1')).toBe(150000); // 还欠 ¥1500
     expect(accountBalance(txns, 'wechat')).toBe(100000); // 已收 ¥1000
     expect(accountBalance(txns, 'rev')).toBe(-250000); // 收入累计 ¥2500（收入科目余额为负）
+  });
+});
+
+describe('allocateCustomerPayments（FIFO 应收状态）', () => {
+  const o = (id: string, total: number, date: string) => ({ id, total, date });
+
+  it('未收：collected=0 全部 unpaid，应收=总额', () => {
+    const r = allocateCustomerPayments([o('a', 10000, '2026-06-01')], 0);
+    expect(r.allocations[0]!.status).toBe('unpaid');
+    expect(r.receivable).toBe(10000);
+    expect(r.prepaid).toBe(0);
+  });
+
+  it('部分收：单笔收一半 → partial，应收=余款', () => {
+    const r = allocateCustomerPayments([o('a', 10000, '2026-06-01')], 8000);
+    expect(r.allocations[0]).toMatchObject({ collected: 8000, status: 'partial' });
+    expect(r.receivable).toBe(2000);
+  });
+
+  it('已收清：收满 → paid', () => {
+    const r = allocateCustomerPayments([o('a', 10000, '2026-06-01')], 10000);
+    expect(r.allocations[0]!.status).toBe('paid');
+    expect(r.receivable).toBe(0);
+    expect(r.prepaid).toBe(0);
+  });
+
+  it('多收：收款 > 总额 → 全部 paid + 预收 credit', () => {
+    const r = allocateCustomerPayments([o('a', 10000, '2026-06-01')], 12000);
+    expect(r.allocations[0]!.status).toBe('paid');
+    expect(r.receivable).toBe(0);
+    expect(r.prepaid).toBe(2000);
+  });
+
+  it('FIFO：先还最早的单，多付滚到后续单', () => {
+    // 两单 ¥100 + ¥50，共收 ¥120 → 早单还清(100)、晚单部分(20)、欠 30
+    const r = allocateCustomerPayments([o('late', 5000, '2026-06-05'), o('early', 10000, '2026-06-01')], 12000);
+    const early = r.allocations.find((a) => a.orderId === 'early')!;
+    const late = r.allocations.find((a) => a.orderId === 'late')!;
+    expect(early).toMatchObject({ collected: 10000, status: 'paid' });
+    expect(late).toMatchObject({ collected: 2000, status: 'partial' });
+    expect(r.receivable).toBe(3000);
+    // 分摊按日期升序：early 在前
+    expect(r.allocations.map((a) => a.orderId)).toEqual(['early', 'late']);
   });
 });

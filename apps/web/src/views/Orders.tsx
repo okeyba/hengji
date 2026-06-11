@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fromMinor, orderTotal, toMinor } from '@app/core';
-import type { OrderLine, OrderStatus } from '@app/core';
+import { allocateCustomerPayments, fromMinor, orderTotal, toMinor } from '@app/core';
+import type { OrderLine, OrderPaymentStatus, OrderStatus } from '@app/core';
 import type { StoredCustomer, StoredOrder, StoredProduct } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
 import { fmtMoney, todayISO } from '../format';
-import { completeOrder, receivableBalance, recordCollection } from '../biz';
+import { completeOrder, receivableBalance, receivableSummary, recordCollection } from '../biz';
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending_purchase: { label: '待采购', cls: '' },
@@ -68,6 +68,41 @@ export default function Orders({ data }: { data: AppData }) {
     () => lines.reduce((s, l) => s + Math.round((Number(l.qty) || 0) * toMinorSafe(l.price)), 0),
     [lines],
   );
+
+  // 每客户 FIFO 把累计收款摊到已完成订单 → 每单收款状态 + 应收/预收概览
+  const { payStatus, summary, outstanding } = useMemo(() => {
+    const status = new Map<string, { status: OrderPaymentStatus; collected: number; total: number }>();
+    const out: Array<{ order: StoredOrder; owed: number; days: number; overdue: boolean }> = [];
+    const byCust = new Map<string, StoredOrder[]>();
+    for (const o of orders) {
+      if (o.status !== 'completed') continue;
+      const arr = byCust.get(o.customerId) ?? [];
+      arr.push(o);
+      byCust.set(o.customerId, arr);
+    }
+    const today = todayISO();
+    for (const [custId2, custOrders] of byCust) {
+      const cust = customers.find((c) => c.id === custId2);
+      if (!cust) continue;
+      const totalOrdered = custOrders.reduce((s, o) => s + orderTotal(o.lines), 0);
+      // 累计已收 = 已完成订单总额 − 应收子科目净额（完成单借应收、收款贷应收，二者之差即已收）
+      const totalCollected = totalOrdered - receivableBalance(accounts, txns, cust.name);
+      const ledger = allocateCustomerPayments(
+        custOrders.map((o) => ({ id: o.id, total: orderTotal(o.lines), date: o.date })),
+        totalCollected,
+      );
+      for (const a of ledger.allocations) {
+        status.set(a.orderId, { status: a.status, collected: a.collected, total: a.total });
+        if (a.status !== 'paid') {
+          const ord = custOrders.find((o) => o.id === a.orderId)!;
+          const days = daysBetween(ord.date, today);
+          out.push({ order: ord, owed: a.total - a.collected, days, overdue: cust.dueDays > 0 && days > cust.dueDays });
+        }
+      }
+    }
+    out.sort((x, y) => y.days - x.days);
+    return { payStatus: status, summary: receivableSummary(accounts, txns), outstanding: out };
+  }, [orders, customers, accounts, txns]);
 
   function setLine(key: string, patch: Partial<LineDraft>): void {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -192,6 +227,31 @@ export default function Orders({ data }: { data: AppData }) {
         <h2>{book.name} · 订单</h2>
       </div>
 
+      {(summary.receivable > 0 || summary.prepaid > 0 || outstanding.length > 0) && (
+        <div className="card">
+          <div className="recv-head">
+            <h3 style={{ margin: 0 }}>应收概览</h3>
+            <span className="recv-sums">
+              <span className={summary.receivable > 0 ? 'neg' : 'muted'}>应收 {fmtMoney(summary.receivable)}</span>
+              {summary.prepaid > 0 && <span className="recv-pre">预收 {fmtMoney(summary.prepaid)}</span>}
+            </span>
+          </div>
+          {outstanding.length === 0 ? (
+            <p className="muted" style={{ marginTop: 8 }}>所有已完成订单均已收清 🎉</p>
+          ) : (
+            outstanding.map(({ order, owed, days, overdue }) => (
+              <div className="recv-row" key={order.id}>
+                <span className="bname">
+                  {custName(order.customerId)} <span className="muted">· {order.date} · {days}天前</span>
+                  {overdue && <span className="chip danger"> 逾期</span>}
+                </span>
+                <span className="bnum neg">欠 {fmtMoney(owed)}</span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       <div className="card">
         <h3>新建订单</h3>
         {activeCustomers.length === 0 ? (
@@ -277,6 +337,7 @@ export default function Orders({ data }: { data: AppData }) {
         {orders.length === 0 && <p className="muted">还没有订单。</p>}
         {orders.map((o) => {
           const st = STATUS[o.status];
+          const pay = o.status === 'completed' ? payBadge(payStatus.get(o.id)) : null;
           return (
             <div className="brow" key={o.id}>
               <div className="bhead">
@@ -284,6 +345,7 @@ export default function Orders({ data }: { data: AppData }) {
                   {custName(o.customerId)} <span className="muted">· {o.date}</span>
                 </span>
                 <span className={`chip ${st.cls}`}>{st.label}</span>
+                {pay && <span className={`chip ${pay.cls}`}>{pay.label}</span>}
                 <span className="bnum">{fmtMoney(orderTotal(o.lines))}</span>
               </div>
               <div className="ord-items">{o.lines.map((l) => `${l.name}×${l.qty}`).join('，')}</div>
@@ -348,4 +410,18 @@ export default function Orders({ data }: { data: AppData }) {
 function toMinorSafe(price: string): number {
   const n = Number(price);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : 0;
+}
+
+/** 两个 YYYY-MM-DD 间的天数（to − from）。按 UTC 解析，避免夏令时导致差一天。 */
+function daysBetween(from: string, to: string): number {
+  const ms = Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`);
+  return Math.floor(ms / 86400000);
+}
+
+/** 完成订单的收款状态徽章。 */
+function payBadge(p?: { status: OrderPaymentStatus; collected: number; total: number }): { label: string; cls: string } | null {
+  if (!p) return null;
+  if (p.status === 'paid') return { label: '已收清', cls: 'ok' };
+  if (p.status === 'partial') return { label: `部分收 ${fmtMoney(p.collected)}/${fmtMoney(p.total)}`, cls: 'warn' };
+  return { label: '未收款', cls: 'danger' };
 }

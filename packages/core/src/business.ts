@@ -73,3 +73,52 @@ export function collectionEntry(
     genId,
   );
 }
+
+/** 单个订单的收款状态。 */
+export type OrderPaymentStatus = 'unpaid' | 'partial' | 'paid';
+
+export interface OrderAllocation {
+  orderId: string;
+  total: number;
+  /** FIFO 摊到本单的已收金额（最小单位） */
+  collected: number;
+  status: OrderPaymentStatus;
+}
+
+export interface CustomerLedger {
+  /** 各已完成订单的收款分摊（按下单先后） */
+  allocations: OrderAllocation[];
+  /** 客户欠你（净额，≥0） */
+  receivable: number;
+  /** 你欠客户 / 预收（净额，≥0）——多付的钱，可抵后续订单 */
+  prepaid: number;
+}
+
+/**
+ * 把客户累计收款按下单先后（FIFO）摊到其已完成订单：
+ * 先还最早的单，多付自动滚到后续订单，全部还清后剩余即预收（credit）。
+ * @param orders 该客户的已完成订单（id + total 最小单位 + date）
+ * @param totalCollected 该客户累计已收（最小单位，≥0）
+ */
+export function allocateCustomerPayments(
+  orders: ReadonlyArray<{ id: string; total: number; date: string }>,
+  totalCollected: number,
+): CustomerLedger {
+  const collected0 = Math.max(0, totalCollected);
+  const sorted = [...orders].sort((a, b) =>
+    a.date < b.date ? -1 : a.date > b.date ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  );
+  let remaining = collected0;
+  const allocations: OrderAllocation[] = sorted.map((o) => {
+    const collected = Math.min(remaining, o.total);
+    remaining -= collected;
+    const status: OrderPaymentStatus = collected <= 0 ? 'unpaid' : collected < o.total ? 'partial' : 'paid';
+    return { orderId: o.id, total: o.total, collected, status };
+  });
+  const totalOrdered = sorted.reduce((s, o) => s + o.total, 0);
+  return {
+    allocations,
+    receivable: Math.max(0, totalOrdered - collected0),
+    prepaid: Math.max(0, collected0 - totalOrdered),
+  };
+}

@@ -98,58 +98,65 @@ export default function Accounts({ data }: { data: AppData }) {
         return (
           <div className="card" key={g.type}>
             <h3>{g.label}</h3>
-            {rows.map((a) => (
-              <div className="brow" key={a.id}>
-                <div className="bhead">
-                  {editId === a.id ? (
-                    <input
-                      className="bname"
-                      style={{ flex: 1 }}
-                      autoFocus
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') void saveRename(a);
-                        if (e.key === 'Escape') setEditId(null);
-                      }}
-                    />
-                  ) : (
-                    <span className={`bname${a.archived ? ' muted' : ''}`}>
-                      {a.name}
-                      {a.archived && <span className="chip"> 已归档</span>}
-                    </span>
-                  )}
-                  {showBal && !a.archived && <span className="bnum">{fmtMoney(accountBalance(txns, a.id))}</span>}
-                  <div className="arow-btns">
-                    {editId === a.id ? (
-                      <>
-                        <button className="lnk" onClick={() => void saveRename(a)}>
-                          保存
-                        </button>
-                        <button className="lnk" onClick={() => setEditId(null)}>
-                          取消
-                        </button>
-                      </>
+            {rows.map((a) => {
+              // 应收账款及其按客户自动建的子科目由生意流程托管：禁止改名/归档，
+              // 否则会断开「应收账款/客户名」的名字关联、或被默认 listAccounts 排除而漏算应收。
+              const managed = a.name === '应收账款' || a.name.startsWith('应收账款/');
+              return (
+                <div className="brow" key={a.id}>
+                  <div className="bhead">
+                    {editId === a.id && !managed ? (
+                      <input
+                        className="bname"
+                        style={{ flex: 1 }}
+                        autoFocus
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveRename(a);
+                          if (e.key === 'Escape') setEditId(null);
+                        }}
+                      />
                     ) : (
-                      <>
-                        <button
-                          className="lnk"
-                          onClick={() => {
-                            setEditId(a.id);
-                            setDraft(a.name);
-                          }}
-                        >
-                          改名
-                        </button>
-                        <button className={`lnk${a.archived ? '' : ' danger'}`} onClick={() => void toggleArchive(a)}>
-                          {a.archived ? '恢复' : '归档'}
-                        </button>
-                      </>
+                      <span className={`bname${a.archived ? ' muted' : ''}`}>
+                        {a.name}
+                        {a.archived && <span className="chip"> 已归档</span>}
+                      </span>
                     )}
+                    {showBal && !a.archived && <span className="bnum">{fmtMoney(accountBalance(txns, a.id))}</span>}
+                    <div className="arow-btns">
+                      {managed ? (
+                        <span className="muted" style={{ fontSize: 12 }}>自动管理</span>
+                      ) : editId === a.id ? (
+                        <>
+                          <button className="lnk" onClick={() => void saveRename(a)}>
+                            保存
+                          </button>
+                          <button className="lnk" onClick={() => setEditId(null)}>
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            className="lnk"
+                            onClick={() => {
+                              setEditId(a.id);
+                              setDraft(a.name);
+                            }}
+                          >
+                            改名
+                          </button>
+                          <button className={`lnk${a.archived ? '' : ' danger'}`} onClick={() => void toggleArchive(a)}>
+                            {a.archived ? '恢复' : '归档'}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         );
       })}
