@@ -307,8 +307,8 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         note: '',
         revenueTxnId: null,
         lines: [
-          { id: 'l1', orderId: 'o1', name: 'A货', qty: 2, unitPrice: 120000 },
-          { id: 'l2', orderId: 'o1', name: 'B货', qty: 1, unitPrice: 50000 },
+          { id: 'l1', orderId: 'o1', name: 'A货', qty: 2, unitPrice: 120000, productId: null },
+          { id: 'l2', orderId: 'o1', name: 'B货', qty: 1, unitPrice: 50000, productId: null },
         ],
       };
       const stored = await repo.addOrder(order);
@@ -339,7 +339,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         status: 'pending_ship',
         note: '',
         revenueTxnId: null,
-        lines: [{ id: 'l1', orderId: 'o1', name: 'A货', qty: 1, unitPrice: 250000 }],
+        lines: [{ id: 'l1', orderId: 'o1', name: 'A货', qty: 1, unitPrice: 250000, productId: null }],
       };
       await repo.addOrder(order);
       // 完成 → 确认收入：借 应收(b2ar) 贷 营业收入(b2sales)
@@ -392,6 +392,56 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
       // 应收余额 = 250000 - 100000 = 150000（从分录聚合）
       const t2 = await repo.listTransactions({ bookId: B2 });
       expect(accountBalance(t2, 'b2ar')).toBe(150000);
+    });
+  });
+
+  describe(`${name} · 商品（C1）`, () => {
+    const prod = (id: string, bookId: string, name: string, cost: number, sale: number, isStock = false) => ({
+      id,
+      bookId,
+      name,
+      costPrice: cost,
+      salePrice: sale,
+      isStock,
+      unit: '',
+      archived: false,
+    });
+
+    it('商品 add/get + 账本校验 + bookId/归档过滤 + update', async () => {
+      const repo = await seed(makeRepo(fakeClock()));
+      const p = await repo.addProduct(prod('p1', B2, 'A型工具', 8000, 12500, true));
+      expect(p.deleted).toBe(false);
+      expect((await repo.getProduct('p1'))!.salePrice).toBe(12500);
+      expect((await repo.getProduct('p1'))!.isStock).toBe(true);
+      await expect(repo.addProduct(prod('pX', 'ghost', '幽灵货', 0, 0))).rejects.toThrow();
+      await repo.addProduct(prod('p2', B2, 'B型配件', 1000, 3000));
+      expect((await repo.listProducts({ bookId: B2 })).map((x) => x.id).sort()).toEqual(['p1', 'p2']);
+      await repo.updateProduct('p2', { archived: true, salePrice: 3500 });
+      expect((await repo.listProducts({ bookId: B2 })).map((x) => x.id)).toEqual(['p1']);
+      expect((await repo.listProducts({ bookId: B2, includeArchived: true })).length).toBe(2);
+      expect((await repo.getProduct('p2'))!.salePrice).toBe(3500);
+      await expect(repo.updateProduct('nope', { name: 'x' })).rejects.toThrow();
+    });
+
+    it('订单行可关联商品 id 并往返；自由文本行 productId=null', async () => {
+      const repo = await seed(makeRepo(fakeClock()));
+      await repo.addCustomer({ id: 'cu1', bookId: B2, name: '张三', phone: '', note: '', dueDays: 0, archived: false });
+      await repo.addProduct(prod('p1', B2, 'A型工具', 8000, 12500, true));
+      await repo.addOrder({
+        id: 'o1',
+        bookId: B2,
+        customerId: 'cu1',
+        date: '2026-06-10',
+        status: 'pending_ship',
+        note: '',
+        revenueTxnId: null,
+        lines: [
+          { id: 'l1', orderId: 'o1', name: 'A型工具', qty: 2, unitPrice: 12500, productId: 'p1' },
+          { id: 'l2', orderId: 'o1', name: '手写项', qty: 1, unitPrice: 500, productId: null },
+        ],
+      });
+      const got = await repo.getOrder('o1');
+      expect(got!.lines.map((l) => l.productId)).toEqual(['p1', null]);
     });
   });
 }

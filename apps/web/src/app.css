@@ -199,6 +199,7 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .ord-lines { display: flex; flex-direction: column; gap: 8px; margin: 6px 0; }
 .ord-line { display: flex; align-items: center; gap: 8px; }
 .ord-line input { flex: 1; }
+.ord-line .ord-pick { flex: none; width: 116px; }
 .ord-line .ord-qty { flex: none; width: 72px; }
 .ord-line .ord-price { flex: none; width: 96px; }
 .ord-line .ord-sub { flex: none; width: 84px; text-align: right; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -206,6 +207,8 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .ord-total { font-weight: 700; font-variant-numeric: tabular-nums; margin-right: auto; }
 .ord-items { font-size: 12.5px; color: var(--muted); margin: 2px 0 6px; }
 .collect { border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 10px; }
+.chkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); }
+.chkline input { width: auto; }
 
 /* 财务总表账本卡片 */
 .bookcards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }

@@ -91,12 +91,33 @@ export type OrderStatus = 'pending_purchase' | 'pending_ship' | 'shipped' | 'com
 export interface OrderLine {
   id: string;
   orderId: string;
-  /** 自由文本商品名（B 期；商品主数据留 C 期） */
+  /** 商品名（可来自商品主数据，也可自由文本） */
   name: string;
   /** 数量（可含小数，如按重量计） */
   qty: number;
   /** 单价（最小单位/分） */
   unitPrice: Minor;
+  /** 关联的商品主数据 id；自由文本行为 null（C1 期） */
+  productId: string | null;
+}
+
+/**
+ * 商品主数据（v0.2 C1 期）：开单时可选商品自动带价，免去重复手输。
+ * isStock=true 的库存品在 C2 期接入出入库与移动加权平均成本。
+ */
+export interface Product {
+  id: string;
+  bookId: string;
+  name: string;
+  /** 进价（最小单位/分） */
+  costPrice: Minor;
+  /** 售价（最小单位/分） */
+  salePrice: Minor;
+  /** 是否库存品（库存/COGS 在 C2 期启用） */
+  isStock: boolean;
+  /** 单位（个/kg…），可空 */
+  unit: string;
+  archived: boolean;
 }
 
 export interface Order {

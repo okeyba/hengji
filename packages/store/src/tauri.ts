@@ -1,6 +1,6 @@
 import Database from '@tauri-apps/plugin-sql';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, Order, OrderStatus, Posting, Settlement, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, Order, OrderStatus, Posting, Product, Settlement, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -8,12 +8,14 @@ import type {
   Clock,
   CustomerPatch,
   OrderPatch,
+  ProductPatch,
   Repository,
   StoredAccount,
   StoredBook,
   StoredBudget,
   StoredCustomer,
   StoredOrder,
+  StoredProduct,
   StoredSettlement,
   StoredTransaction,
   TxnQuery,
@@ -28,6 +30,7 @@ import {
   toOrder,
   toOrderLine,
   toPosting,
+  toProduct,
   toSettlement,
   toTxn,
 } from './schema';
@@ -39,6 +42,7 @@ import type {
   OrderLineRow,
   OrderRow,
   PostingRow,
+  ProductRow,
   SettlementRow,
   TxnRow,
 } from './schema';
@@ -425,13 +429,10 @@ export class TauriSqlRepository implements Repository {
 
   private async insertOrderLines(orderId: string, lines: Order['lines']): Promise<void> {
     for (const l of lines) {
-      await this.db.execute('INSERT INTO order_lines (id, order_id, name, qty, unit_price) VALUES ($1, $2, $3, $4, $5)', [
-        l.id,
-        orderId,
-        l.name,
-        l.qty,
-        l.unitPrice,
-      ]);
+      await this.db.execute(
+        'INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [l.id, orderId, l.name, l.qty, l.unitPrice, l.productId],
+      );
     }
   }
 
@@ -455,7 +456,10 @@ export class TauriSqlRepository implements Repository {
     const rows = await this.db.select<OrderRow[]>('SELECT * FROM orders WHERE id = $1 AND deleted = 0', [id]);
     const head = rows[0];
     if (!head) return null;
-    const lineRows = await this.db.select<OrderLineRow[]>('SELECT * FROM order_lines WHERE order_id = $1', [id]);
+    const lineRows = await this.db.select<OrderLineRow[]>(
+      'SELECT * FROM order_lines WHERE order_id = $1 ORDER BY rowid',
+      [id],
+    );
     return toOrder(head, lineRows.map(toOrderLine));
   }
 
@@ -483,7 +487,7 @@ export class TauriSqlRepository implements Repository {
     for (const batch of chunk(rows.map((r) => r.id), 500)) {
       const placeholders = batch.map((_, i) => `$${i + 1}`).join(', ');
       const lineRows = await this.db.select<OrderLineRow[]>(
-        `SELECT * FROM order_lines WHERE order_id IN (${placeholders})`,
+        `SELECT * FROM order_lines WHERE order_id IN (${placeholders}) ORDER BY rowid`,
         batch,
       );
       for (const lr of lineRows) {
@@ -579,5 +583,48 @@ export class TauriSqlRepository implements Repository {
       params,
     );
     return rows.map(toSettlement);
+  }
+
+  // ---- 生意：商品 ----
+  async addProduct(product: Product): Promise<StoredProduct> {
+    if (await this.exists('SELECT 1 FROM products WHERE id = $1', [product.id])) {
+      throw new Error(`商品已存在：${product.id}`);
+    }
+    await this.assertBook(product.bookId);
+    const ts = this.now();
+    await this.db.execute(
+      `INSERT INTO products (id, book_id, name, cost_price, sale_price, is_stock, unit, archived, created_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
+      [product.id, product.bookId, product.name, product.costPrice, product.salePrice, product.isStock ? 1 : 0, product.unit, product.archived ? 1 : 0, ts, ts],
+    );
+    return (await this.getProduct(product.id))!;
+  }
+
+  async getProduct(id: string): Promise<StoredProduct | null> {
+    const rows = await this.db.select<ProductRow[]>('SELECT * FROM products WHERE id = $1 AND deleted = 0', [id]);
+    return rows[0] ? toProduct(rows[0]) : null;
+  }
+
+  async listProducts(opts: { bookId?: string; includeArchived?: boolean } = {}): Promise<StoredProduct[]> {
+    const cond = ['deleted = 0'];
+    const params: unknown[] = [];
+    if (!opts.includeArchived) cond.push('archived = 0');
+    if (opts.bookId) {
+      params.push(opts.bookId);
+      cond.push(`book_id = $${params.length}`);
+    }
+    const rows = await this.db.select<ProductRow[]>(`SELECT * FROM products WHERE ${cond.join(' AND ')}`, params);
+    return rows.map(toProduct);
+  }
+
+  async updateProduct(id: string, patch: ProductPatch): Promise<StoredProduct> {
+    const cur = await this.getProduct(id);
+    if (!cur) throw new Error(`商品不存在：${id}`);
+    const next: StoredProduct = { ...cur, ...patch, updatedAt: this.now() };
+    await this.db.execute(
+      'UPDATE products SET name=$1, cost_price=$2, sale_price=$3, is_stock=$4, unit=$5, archived=$6, updated_at=$7 WHERE id=$8',
+      [next.name, next.costPrice, next.salePrice, next.isStock ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id],
+    );
+    return (await this.getProduct(id))!;
   }
 }

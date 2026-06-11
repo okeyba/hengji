@@ -1,5 +1,5 @@
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, Order, OrderStatus, Settlement, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, Order, OrderStatus, Product, Settlement, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -7,12 +7,14 @@ import type {
   Clock,
   CustomerPatch,
   OrderPatch,
+  ProductPatch,
   Repository,
   StoredAccount,
   StoredBook,
   StoredBudget,
   StoredCustomer,
   StoredOrder,
+  StoredProduct,
   StoredSettlement,
   StoredTransaction,
   TxnQuery,
@@ -39,6 +41,7 @@ export class InMemoryRepository implements Repository {
   private readonly customers = new Map<string, StoredCustomer>();
   private readonly orders = new Map<string, StoredOrder>();
   private readonly settlements = new Map<string, StoredSettlement>();
+  private readonly products = new Map<string, StoredProduct>();
   private readonly now: Clock;
 
   constructor(opts: { now?: Clock } = {}) {
@@ -332,6 +335,40 @@ export class InMemoryRepository implements Repository {
       out.push(clone(s));
     }
     return sortByDateDesc(out);
+  }
+
+  // ---- 生意：商品 ----
+  async addProduct(product: Product): Promise<StoredProduct> {
+    if (this.products.has(product.id)) throw new Error(`商品已存在：${product.id}`);
+    this.liveBook(product.bookId);
+    const ts = this.now();
+    const stored: StoredProduct = { ...clone(product), createdAt: ts, updatedAt: ts, deleted: false };
+    this.products.set(product.id, stored);
+    return clone(stored);
+  }
+
+  async getProduct(id: string): Promise<StoredProduct | null> {
+    const p = this.products.get(id);
+    return p && !p.deleted ? clone(p) : null;
+  }
+
+  async listProducts(opts: { bookId?: string; includeArchived?: boolean } = {}): Promise<StoredProduct[]> {
+    const out: StoredProduct[] = [];
+    for (const p of this.products.values()) {
+      if (p.deleted) continue;
+      if (!opts.includeArchived && p.archived) continue;
+      if (opts.bookId && p.bookId !== opts.bookId) continue;
+      out.push(clone(p));
+    }
+    return out;
+  }
+
+  async updateProduct(id: string, patch: ProductPatch): Promise<StoredProduct> {
+    const p = this.products.get(id);
+    if (!p || p.deleted) throw new Error(`商品不存在：${id}`);
+    const updated: StoredProduct = { ...p, ...patch, updatedAt: this.now() };
+    this.products.set(id, updated);
+    return clone(updated);
   }
 }
 

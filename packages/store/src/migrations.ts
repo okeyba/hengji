@@ -6,6 +6,7 @@
  * - m2：多账本（books 表 + 全表 book_id 列）；遗留数据自动回填到固定 id 'default'
  *   的「我的账本」（personal）。空库不产生账本（由应用首启创建）。
  * - m3：生意 B 期（customers/orders/order_lines/settlements）；纯新增表，不动既有数据。
+ * - m4：商品主数据 C1（products 表 + order_lines.product_id 列）；纯新增。
  */
 
 export interface SqlRunner {
@@ -148,7 +149,27 @@ const M3: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_settlements_counterparty ON settlements(counterparty_id)`,
 ];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3];
+// m4：商品主数据 C1 期（products 表 + order_lines.product_id 列）。纯新增，order_lines
+// 既有行 product_id 默认 NULL（= 自由文本行）。
+const M4: string[] = [
+  `CREATE TABLE IF NOT EXISTS products (
+    id TEXT PRIMARY KEY,
+    book_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    cost_price INTEGER NOT NULL DEFAULT 0,
+    sale_price INTEGER NOT NULL DEFAULT 0,
+    is_stock INTEGER NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT '',
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  `ALTER TABLE order_lines ADD COLUMN product_id TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_products_book ON products(book_id)`,
+];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

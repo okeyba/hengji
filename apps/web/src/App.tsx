@@ -12,8 +12,9 @@ import Invest from './views/Invest';
 import Accounts from './views/Accounts';
 import Customers from './views/Customers';
 import Orders from './views/Orders';
+import Products from './views/Products';
 
-type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'customers' | 'orders';
+type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'customers' | 'orders' | 'products';
 
 export interface AppData {
   repo: Repository;
@@ -37,6 +38,7 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['dashboard', '总览'],
     ['orders', '订单'],
     ['customers', '客户'],
+    ['products', '商品'],
     ['txns', '流水'],
     ['budgets', '预算'],
     ['accounts', '账户'],
@@ -211,6 +213,7 @@ export default function App() {
             {view === 'accounts' && <Accounts data={data} />}
             {view === 'customers' && <Customers data={data} />}
             {view === 'orders' && <Orders data={data} />}
+            {view === 'products' && <Products data={data} />}
           </>
         )}
       </main>

@@ -5,6 +5,7 @@ import type {
   StoredBudget,
   StoredCustomer,
   StoredOrder,
+  StoredProduct,
   StoredSettlement,
   StoredTransaction,
 } from './types';
@@ -93,6 +94,20 @@ export interface OrderLineRow {
   name: string;
   qty: number;
   unit_price: number;
+  product_id: string | null;
+}
+export interface ProductRow {
+  id: string;
+  book_id: string;
+  name: string;
+  cost_price: number;
+  sale_price: number;
+  is_stock: number;
+  unit: string;
+  archived: number;
+  created_at: string;
+  updated_at: string;
+  deleted: number;
 }
 export interface SettlementRow {
   id: string;
@@ -188,7 +203,23 @@ export function toCustomer(r: CustomerRow): StoredCustomer {
 }
 
 export function toOrderLine(r: OrderLineRow): OrderLine {
-  return { id: r.id, orderId: r.order_id, name: r.name, qty: r.qty, unitPrice: r.unit_price };
+  return { id: r.id, orderId: r.order_id, name: r.name, qty: r.qty, unitPrice: r.unit_price, productId: r.product_id };
+}
+
+export function toProduct(r: ProductRow): StoredProduct {
+  return {
+    id: r.id,
+    bookId: r.book_id,
+    name: r.name,
+    costPrice: r.cost_price,
+    salePrice: r.sale_price,
+    isStock: r.is_stock !== 0,
+    unit: r.unit,
+    archived: r.archived !== 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deleted: r.deleted !== 0,
+  };
 }
 
 export function toOrder(r: OrderRow, lines: OrderLine[]): StoredOrder {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fromMinor, orderTotal, toMinor } from '@app/core';
 import type { OrderLine, OrderStatus, SettlementMethod } from '@app/core';
-import type { StoredCustomer, StoredOrder } from '@app/store';
+import type { StoredCustomer, StoredOrder, StoredProduct } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
 import { fmtMoney, todayISO } from '../format';
@@ -17,17 +17,19 @@ const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
 
 interface LineDraft {
   key: string;
+  productId: string;
   name: string;
   qty: string;
   price: string;
 }
 
-const emptyLine = (): LineDraft => ({ key: genId(), name: '', qty: '1', price: '' });
+const emptyLine = (): LineDraft => ({ key: genId(), productId: '', name: '', qty: '1', price: '' });
 
 export default function Orders({ data }: { data: AppData }) {
   const { repo, book, accounts, txns, reload } = data;
   const [customers, setCustomers] = useState<StoredCustomer[]>([]);
   const [orders, setOrders] = useState<StoredOrder[]>([]);
+  const [products, setProducts] = useState<StoredProduct[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   // 新建订单表单
@@ -44,12 +46,14 @@ export default function Orders({ data }: { data: AppData }) {
   const [cAcct, setCAcct] = useState('');
 
   async function refresh(): Promise<void> {
-    const [cs, os] = await Promise.all([
+    const [cs, os, ps] = await Promise.all([
       repo.listCustomers({ bookId: book.id, includeArchived: true }),
       repo.listOrders({ bookId: book.id }),
+      repo.listProducts({ bookId: book.id }),
     ]);
     setCustomers(cs);
     setOrders(os);
+    setProducts(ps);
   }
   useEffect(() => {
     void refresh();
@@ -70,6 +74,15 @@ export default function Orders({ data }: { data: AppData }) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   }
 
+  function pickProduct(key: string, productId: string): void {
+    const p = products.find((x) => x.id === productId);
+    if (!p) {
+      setLine(key, { productId: '' });
+      return;
+    }
+    setLine(key, { productId, name: p.name, price: String(fromMinor(p.salePrice)) });
+  }
+
   async function save(): Promise<void> {
     setErr(null);
     if (!effCust) {
@@ -88,6 +101,7 @@ export default function Orders({ data }: { data: AppData }) {
       name: l.name.trim(),
       qty: Number(l.qty),
       unitPrice: toMinor(Number(l.price)),
+      productId: l.productId || null,
     }));
     try {
       await repo.addOrder({
@@ -206,7 +220,18 @@ export default function Orders({ data }: { data: AppData }) {
             <div className="ord-lines">
               {lines.map((l) => (
                 <div className="ord-line" key={l.key}>
-                  <input placeholder="商品名称" value={l.name} onChange={(e) => setLine(l.key, { name: e.target.value })} />
+                  {products.length > 0 && (
+                    <select className="ord-pick" value={l.productId} onChange={(e) => pickProduct(l.key, e.target.value)}>
+                      <option value="">自由输入</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {/* 手改名称即视为自由文本行，断开商品关联（改价不断开：同一商品的自定义售价是合理的） */}
+                  <input placeholder="商品名称" value={l.name} onChange={(e) => setLine(l.key, { name: e.target.value, productId: '' })} />
                   <input
                     className="ord-qty"
                     inputMode="decimal"

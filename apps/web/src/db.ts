@@ -115,6 +115,8 @@ async function bootstrapDemo(): Promise<Repository> {
     { kind: 'expense', bookId: biz.book.id, date: daysAgo(2), amount: toMinor(120), accountId: biz.byName('对公账户'), categoryId: biz.byName('运费杂费'), payee: '快递费' },
   ];
   for (const e of bizEntries) await repo.addTransaction(expandEntry(e, genId));
+  await repo.addProduct({ id: genId(), bookId: biz.book.id, name: 'A型工具', costPrice: toMinor(80), salePrice: toMinor(125), isStock: true, unit: '个', archived: false });
+  await repo.addProduct({ id: genId(), bookId: biz.book.id, name: 'B型配件', costPrice: toMinor(20), salePrice: toMinor(50), isStock: true, unit: '个', archived: false });
 
   // —— 投资组合（投资）
   const inv = await createBookWithChart(repo, '投资组合', 'investment');

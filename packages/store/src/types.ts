@@ -1,4 +1,4 @@
-import type { Account, Book, Budget, Customer, Order, OrderStatus, Settlement, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, Order, OrderStatus, Product, Settlement, Transaction } from '@app/core';
 
 /** 每条记录都带的同步元数据，为将来的云同步预留。 */
 export interface SyncMeta {
@@ -15,6 +15,7 @@ export type StoredBudget = Budget & SyncMeta;
 export type StoredCustomer = Customer & SyncMeta;
 export type StoredOrder = Order & SyncMeta;
 export type StoredSettlement = Settlement & SyncMeta;
+export type StoredProduct = Product & SyncMeta;
 
 /** 时钟注入：返回 ISO 时间戳；默认实现用 Date，测试注入确定性时钟。 */
 export type Clock = () => string;
@@ -50,6 +51,15 @@ export interface OrderPatch {
   status?: OrderStatus;
   note?: string;
   revenueTxnId?: string | null;
+}
+
+export interface ProductPatch {
+  name?: string;
+  costPrice?: number;
+  salePrice?: number;
+  isStock?: boolean;
+  unit?: string;
+  archived?: boolean;
 }
 
 export interface TxnQuery {
@@ -111,4 +121,9 @@ export interface Repository {
 
   addSettlement(settlement: Settlement): Promise<StoredSettlement>;
   listSettlements(query?: { bookId?: string; orderId?: string; counterpartyId?: string }): Promise<StoredSettlement[]>;
+
+  addProduct(product: Product): Promise<StoredProduct>;
+  getProduct(id: string): Promise<StoredProduct | null>;
+  listProducts(opts?: { bookId?: string; includeArchived?: boolean }): Promise<StoredProduct[]>;
+  updateProduct(id: string, patch: ProductPatch): Promise<StoredProduct>;
 }

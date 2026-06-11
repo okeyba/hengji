@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, Order, OrderStatus, Posting, Settlement, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, Order, OrderStatus, Posting, Product, Settlement, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -8,12 +8,14 @@ import type {
   Clock,
   CustomerPatch,
   OrderPatch,
+  ProductPatch,
   Repository,
   StoredAccount,
   StoredBook,
   StoredBudget,
   StoredCustomer,
   StoredOrder,
+  StoredProduct,
   StoredSettlement,
   StoredTransaction,
   TxnQuery,
@@ -28,6 +30,7 @@ import {
   toOrder,
   toOrderLine,
   toPosting,
+  toProduct,
   toSettlement,
   toTxn,
 } from './schema';
@@ -39,6 +42,7 @@ import type {
   OrderLineRow,
   OrderRow,
   PostingRow,
+  ProductRow,
   SettlementRow,
   TxnRow,
 } from './schema';
@@ -432,9 +436,9 @@ export class SqliteRepository implements Repository {
 
   private insertOrderLines(orderId: string, lines: Order['lines']): void {
     const stmt = this.db.prepare(
-      `INSERT INTO order_lines (id, order_id, name, qty, unit_price) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id) VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    for (const l of lines) stmt.run(l.id, orderId, l.name, l.qty, l.unitPrice);
+    for (const l of lines) stmt.run(l.id, orderId, l.name, l.qty, l.unitPrice, l.productId);
   }
 
   async addOrder(order: Order): Promise<StoredOrder> {
@@ -460,7 +464,7 @@ export class SqliteRepository implements Repository {
     const r = this.db.prepare('SELECT * FROM orders WHERE id = ? AND deleted = 0').get(id) as OrderRow | undefined;
     if (!r) return null;
     const lines = (
-      this.db.prepare('SELECT * FROM order_lines WHERE order_id = ?').all(id) as unknown as OrderLineRow[]
+      this.db.prepare('SELECT * FROM order_lines WHERE order_id = ? ORDER BY rowid').all(id) as unknown as OrderLineRow[]
     ).map(toOrderLine);
     return toOrder(r, lines);
   }
@@ -488,7 +492,7 @@ export class SqliteRepository implements Repository {
     for (const batch of chunk(rows.map((r) => r.id), 500)) {
       const placeholders = batch.map(() => '?').join(', ');
       const lineRows = this.db
-        .prepare(`SELECT * FROM order_lines WHERE order_id IN (${placeholders})`)
+        .prepare(`SELECT * FROM order_lines WHERE order_id IN (${placeholders}) ORDER BY rowid`)
         .all(...batch) as unknown as OrderLineRow[];
       for (const lr of lineRows) {
         const arr = byOrder.get(lr.order_id) ?? [];
@@ -580,5 +584,61 @@ export class SqliteRepository implements Repository {
       .prepare(`SELECT * FROM settlements WHERE ${cond.join(' AND ')} ORDER BY date DESC, created_at DESC, id DESC`)
       .all(...params) as unknown as SettlementRow[];
     return rows.map(toSettlement);
+  }
+
+  // ---- 生意：商品 ----
+  async addProduct(product: Product): Promise<StoredProduct> {
+    if (this.db.prepare('SELECT 1 FROM products WHERE id = ?').get(product.id)) {
+      throw new Error(`商品已存在：${product.id}`);
+    }
+    this.assertBook(product.bookId);
+    const ts = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO products (id, book_id, name, cost_price, sale_price, is_stock, unit, archived, created_at, updated_at, deleted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      )
+      .run(
+        product.id,
+        product.bookId,
+        product.name,
+        product.costPrice,
+        product.salePrice,
+        product.isStock ? 1 : 0,
+        product.unit,
+        product.archived ? 1 : 0,
+        ts,
+        ts,
+      );
+    return (await this.getProduct(product.id))!;
+  }
+
+  async getProduct(id: string): Promise<StoredProduct | null> {
+    const r = this.db.prepare('SELECT * FROM products WHERE id = ? AND deleted = 0').get(id) as ProductRow | undefined;
+    return r ? toProduct(r) : null;
+  }
+
+  async listProducts(opts: { bookId?: string; includeArchived?: boolean } = {}): Promise<StoredProduct[]> {
+    const cond = ['deleted = 0'];
+    const params: string[] = [];
+    if (!opts.includeArchived) cond.push('archived = 0');
+    if (opts.bookId) {
+      cond.push('book_id = ?');
+      params.push(opts.bookId);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM products WHERE ${cond.join(' AND ')}`)
+      .all(...params) as unknown as ProductRow[];
+    return rows.map(toProduct);
+  }
+
+  async updateProduct(id: string, patch: ProductPatch): Promise<StoredProduct> {
+    const cur = await this.getProduct(id);
+    if (!cur) throw new Error(`商品不存在：${id}`);
+    const next: StoredProduct = { ...cur, ...patch, updatedAt: this.now() };
+    this.db
+      .prepare(`UPDATE products SET name=?, cost_price=?, sale_price=?, is_stock=?, unit=?, archived=?, updated_at=? WHERE id=?`)
+      .run(next.name, next.costPrice, next.salePrice, next.isStock ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id);
+    return (await this.getProduct(id))!;
   }
 }
