@@ -6,7 +6,7 @@ import { fmtMoney } from '../format';
 import { receivableBalance, renameCustomer } from '../biz';
 
 export default function Customers({ data }: { data: AppData }) {
-  const { repo, book, accounts, txns, reload } = data;
+  const { repo, book, accounts, txns, reload, convert } = data;
   const [list, setList] = useState<StoredCustomer[]>([]);
   const [editId, setEditId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -62,10 +62,10 @@ export default function Customers({ data }: { data: AppData }) {
 
   async function toggleArchive(c: StoredCustomer): Promise<void> {
     if (!c.archived) {
-      const owed = receivableBalance(accounts, txns, c.name);
+      const owed = receivableBalance(accounts, txns, c.name, convert);
       const msg =
         owed > 0
-          ? `「${c.name}」还有应收 ${fmtMoney(owed)} 未收清，仍要归档？归档后不在新建订单中出现，历史保留。`
+          ? `「${c.name}」还有应收 ${fmtMoney(owed, convert.display)} 未收清，仍要归档？归档后不在新建订单中出现，历史保留。`
           : `归档「${c.name}」？归档后不在新建订单中出现，可随时恢复。`;
       if (!confirm(msg)) return;
     }
@@ -82,7 +82,7 @@ export default function Customers({ data }: { data: AppData }) {
       <div className="card">
         {rows.length === 0 && <p className="muted">还没有客户，先在下面添加一个。</p>}
         {rows.map((c) => {
-          const owed = receivableBalance(accounts, txns, c.name);
+          const owed = receivableBalance(accounts, txns, c.name, convert);
           return (
             <div className="brow" key={c.id}>
               <div className="bhead">
@@ -106,7 +106,7 @@ export default function Customers({ data }: { data: AppData }) {
                     {c.archived && <span className="chip"> 已归档</span>}
                   </span>
                 )}
-                {!c.archived && <span className={`bnum${owed > 0 ? ' neg' : ''}`}>{owed > 0 ? `应收 ${fmtMoney(owed)}` : '已结清'}</span>}
+                {!c.archived && <span className={`bnum${owed > 0 ? ' neg' : ''}`}>{owed > 0 ? `应收 ${fmtMoney(owed, convert.display)}` : '已结清'}</span>}
                 <div className="arow-btns">
                   {editId === c.id ? (
                     <>

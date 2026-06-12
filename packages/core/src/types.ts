@@ -128,6 +128,8 @@ export interface Order {
   customerId: string;
   /** 下单日期 YYYY-MM-DD */
   date: string;
+  /** 订单结算币种（ISO 4217 / 自定义代码）；行单价/总额、确认收入、收款均按此币种。默认 'CNY'。 */
+  currency: string;
   status: OrderStatus;
   note: string;
   /** 已完成时生成的收入确认分录 id；未完成为 null */

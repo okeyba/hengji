@@ -303,6 +303,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         bookId: B2,
         customerId: 'cu1',
         date: '2026-06-10',
+        currency: 'USD',
         status: 'pending_ship',
         note: '',
         revenueTxnId: null,
@@ -312,6 +313,8 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         ],
       };
       const stored = await repo.addOrder(order);
+      expect(stored.currency).toBe('USD'); // 订单币种往返
+      expect((await repo.getOrder('o1'))!.currency).toBe('USD');
       expect(stored.lines.length).toBe(2);
       expect((await repo.getOrder('o1'))!.lines.map((l) => l.name)).toEqual(['A货', 'B货']);
       expect(orderTotal(stored.lines)).toBe(290000);
@@ -336,6 +339,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         bookId: B2,
         customerId: 'cu1',
         date: '2026-06-10',
+        currency: 'CNY',
         status: 'pending_ship',
         note: '',
         revenueTxnId: null,
@@ -430,6 +434,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         bookId: B2,
         customerId: 'cu1',
         date: '2026-06-10',
+        currency: 'CNY',
         status: 'pending_ship',
         note: '',
         revenueTxnId: null,

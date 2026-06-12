@@ -457,10 +457,10 @@ export class SqliteRepository implements Repository {
     this.tx(() => {
       this.db
         .prepare(
-          `INSERT INTO orders (id, book_id, customer_id, date, status, note, revenue_txn_id, created_at, updated_at, deleted)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          `INSERT INTO orders (id, book_id, customer_id, date, currency, status, note, revenue_txn_id, created_at, updated_at, deleted)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         )
-        .run(order.id, order.bookId, order.customerId, order.date, order.status, order.note, order.revenueTxnId, ts, ts);
+        .run(order.id, order.bookId, order.customerId, order.date, order.currency, order.status, order.note, order.revenueTxnId, ts, ts);
       this.insertOrderLines(order.id, order.lines);
     });
     return (await this.getOrder(order.id))!;

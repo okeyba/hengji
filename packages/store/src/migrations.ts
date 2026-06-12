@@ -11,6 +11,7 @@
  * - m6：通用设置表 settings（scope+key 主键，value 字符串）；app/账本级共用，纯新增。
  * - m7：月度对账——postings 加 cleared 列（已核销标记）+ reconciliations 表（完成记录）。
  *   既有 posting 默认 cleared=0；纯新增列/表，不动既有数据。
+ * - m8：订单结算币种 orders.currency（默认 'CNY'）；多币种业务 AR。既有订单回落 CNY。
  */
 
 export interface SqlRunner {
@@ -208,7 +209,11 @@ const M7: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_reconciliations_account ON reconciliations(account_id)`,
 ];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7];
+// m8：订单结算币种。多币种业务账本——一张订单一个币种，确认收入/应收子科目/收款都按它。
+// 既有订单默认 'CNY'（与之前行为一致）。
+const M8: string[] = [`ALTER TABLE orders ADD COLUMN currency TEXT NOT NULL DEFAULT 'CNY'`];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

@@ -84,6 +84,7 @@ export interface OrderRow {
   book_id: string;
   customer_id: string;
   date: string;
+  currency: string;
   status: string;
   note: string;
   revenue_txn_id: string | null;
@@ -247,6 +248,7 @@ export function toOrder(r: OrderRow, lines: OrderLine[]): StoredOrder {
     bookId: r.book_id,
     customerId: r.customer_id,
     date: r.date,
+    currency: r.currency,
     status: r.status as OrderStatus,
     note: r.note,
     revenueTxnId: r.revenue_txn_id,

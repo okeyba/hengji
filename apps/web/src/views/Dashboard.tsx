@@ -62,7 +62,7 @@ export default function Dashboard({ data }: { data: AppData }) {
     .filter((s) => s.value > 0);
   const totalAssets = slices.reduce((s, x) => s + x.value, 0);
   const netLabel = book.type === 'business' ? '本月利润' : '本月结余';
-  const recv = book.type === 'business' ? receivableSummary(accounts, txns) : null;
+  const recv = book.type === 'business' ? receivableSummary(accounts, txns, convert) : null;
   // 多币种：账户跨币种时，净资产标头标注「折合<展示币种>」+ 各币种小计
   const display = convert.display;
   const byCur = [...balancesByCurrency(txns, accounts).entries()].filter(([, v]) => v !== 0);
@@ -125,8 +125,8 @@ export default function Dashboard({ data }: { data: AppData }) {
           {recv && (recv.receivable > 0 || recv.prepaid > 0) && (
             <div className="recv-line">
               客户往来：
-              <span className={recv.receivable > 0 ? 'neg' : 'muted'}>应收 {fmtMoney(recv.receivable)}</span>
-              {recv.prepaid > 0 && <span className="recv-pre"> · 预收 {fmtMoney(recv.prepaid)}</span>}
+              <span className={recv.receivable > 0 ? 'neg' : 'muted'}>应收 {fmtMoney(recv.receivable, display)}</span>
+              {recv.prepaid > 0 && <span className="recv-pre"> · 预收 {fmtMoney(recv.prepaid, display)}</span>}
             </div>
           )}
         </div>

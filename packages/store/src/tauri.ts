@@ -450,9 +450,9 @@ export class TauriSqlRepository implements Repository {
     if ((await this.customerBookId(order.customerId)) !== order.bookId) throw new Error('订单客户必须与订单同账本');
     const ts = this.now();
     await this.db.execute(
-      `INSERT INTO orders (id, book_id, customer_id, date, status, note, revenue_txn_id, created_at, updated_at, deleted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0)`,
-      [order.id, order.bookId, order.customerId, order.date, order.status, order.note, order.revenueTxnId, ts, ts],
+      `INSERT INTO orders (id, book_id, customer_id, date, currency, status, note, revenue_txn_id, created_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
+      [order.id, order.bookId, order.customerId, order.date, order.currency, order.status, order.note, order.revenueTxnId, ts, ts],
     );
     await this.insertOrderLines(order.id, order.lines);
     return (await this.getOrder(order.id))!;

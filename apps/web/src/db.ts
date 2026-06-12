@@ -151,13 +151,30 @@ async function bootstrapDemo(): Promise<Repository> {
   await repo.addAccount({ id: arSubId, bookId: biz.book.id, name: '应收账款/老客户', type: 'asset', parentId: biz.byName('应收账款'), currency: 'CNY', archived: false });
   const orderId = genId();
   const lines = [{ id: genId(), orderId, name: 'A型工具', qty: 10, unitPrice: toMinor(125), productId: null }];
-  await repo.addOrder({ id: orderId, bookId: biz.book.id, customerId: custId, date: daysAgo(2), status: 'pending_ship', note: '赊销一批', revenueTxnId: null, lines });
+  await repo.addOrder({ id: orderId, bookId: biz.book.id, customerId: custId, date: daysAgo(2), currency: 'CNY', status: 'pending_ship', note: '赊销一批', revenueTxnId: null, lines });
   const rev = orderRevenueEntry(
     { bookId: biz.book.id, date: daysAgo(2), amount: orderTotal(lines), receivableAccountId: arSubId, revenueAccountId: biz.byName('营业收入'), payee: '老客户', note: '赊销一批' },
     genId,
   );
   await repo.addTransaction(rev);
   await repo.updateOrder(orderId, { status: 'completed', revenueTxnId: rev.id });
+
+  // 一张美元订单——展示「业务 AR 多币种」：海外客户赊购 $1,800，应收记 USD 子科目，
+  // 可在订单页用美元账户收款。子科目名与 biz.arName('海外客户','USD') 一致，便于后续 UI 收款匹配。
+  await repo.addAccount({ id: genId(), bookId: biz.book.id, name: '美元账户', type: 'asset', parentId: null, currency: 'USD', archived: false });
+  const usdCustId = genId();
+  await repo.addCustomer({ id: usdCustId, bookId: biz.book.id, name: '海外客户', phone: '', note: '', dueDays: 45, archived: false });
+  const usdArId = genId();
+  await repo.addAccount({ id: usdArId, bookId: biz.book.id, name: '应收账款/海外客户 (USD)', type: 'asset', parentId: biz.byName('应收账款'), currency: 'USD', archived: false });
+  const usdOrderId = genId();
+  const usdLines = [{ id: genId(), orderId: usdOrderId, name: 'A型工具', qty: 20, unitPrice: toMinor(90), productId: null }];
+  await repo.addOrder({ id: usdOrderId, bookId: biz.book.id, customerId: usdCustId, date: daysAgo(3), currency: 'USD', status: 'pending_ship', note: '外贸订单', revenueTxnId: null, lines: usdLines });
+  const usdRev = orderRevenueEntry(
+    { bookId: biz.book.id, date: daysAgo(3), amount: orderTotal(usdLines), currency: 'USD', receivableAccountId: usdArId, revenueAccountId: biz.byName('营业收入'), payee: '海外客户', note: '外贸订单' },
+    genId,
+  );
+  await repo.addTransaction(usdRev);
+  await repo.updateOrder(usdOrderId, { status: 'completed', revenueTxnId: usdRev.id });
 
   // —— 投资组合（投资）
   const inv = await createBookWithChart(repo, '投资组合', 'investment');
