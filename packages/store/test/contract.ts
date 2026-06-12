@@ -458,13 +458,14 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
   });
 
   describe(`${name} · 商品（C1）`, () => {
-    const prod = (id: string, bookId: string, name: string, cost: number, sale: number, isStock = false) => ({
+    const prod = (id: string, bookId: string, name: string, cost: number, sale: number, isStock = false, dropship = false) => ({
       id,
       bookId,
       name,
       costPrice: cost,
       salePrice: sale,
       isStock,
+      dropship,
       unit: '',
       archived: false,
     });
@@ -475,6 +476,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
       expect(p.deleted).toBe(false);
       expect((await repo.getProduct('p1'))!.salePrice).toBe(12500);
       expect((await repo.getProduct('p1'))!.isStock).toBe(true);
+      expect((await repo.getProduct('p1'))!.dropship).toBe(false);
       await expect(repo.addProduct(prod('pX', 'ghost', '幽灵货', 0, 0))).rejects.toThrow();
       await repo.addProduct(prod('p2', B2, 'B型配件', 1000, 3000));
       expect((await repo.listProducts({ bookId: B2 })).map((x) => x.id).sort()).toEqual(['p1', 'p2']);
@@ -483,6 +485,38 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
       expect((await repo.listProducts({ bookId: B2, includeArchived: true })).length).toBe(2);
       expect((await repo.getProduct('p2'))!.salePrice).toBe(3500);
       await expect(repo.updateProduct('nope', { name: 'x' })).rejects.toThrow();
+      // 代采品 dropship 往返 + update 切换
+      await repo.addProduct(prod('p3', B2, '代采件', 5000, 9000, false, true));
+      expect((await repo.getProduct('p3'))!.dropship).toBe(true);
+      await repo.updateProduct('p3', { dropship: false, isStock: true });
+      expect((await repo.getProduct('p3'))!.dropship).toBe(false);
+      expect((await repo.getProduct('p3'))!.isStock).toBe(true);
+    });
+
+    it('采购单 add（行往返）+ 供应商/订单同账本校验 + list 过滤（C2d 代采）', async () => {
+      const repo = await seed(makeRepo(fakeClock()));
+      await repo.addCustomer({ id: 'cu1', bookId: B2, name: '张三', phone: '', note: '', dueDays: 0, archived: false });
+      await repo.addSupplier({ id: 'su1', bookId: B2, name: '代采供应商', phone: '', note: '', dueDays: 0, archived: false });
+      await repo.addOrder({
+        id: 'o1', bookId: B2, customerId: 'cu1', date: '2026-06-10', currency: 'CNY',
+        status: 'pending_purchase', note: '', revenueTxnId: null,
+        lines: [{ id: 'l1', orderId: 'o1', name: '代采件', qty: 2, unitPrice: 9000, productId: null }],
+      });
+      const p = await repo.addPurchase({
+        id: 'pu1', bookId: B2, supplierId: 'su1', orderId: 'o1', date: '2026-06-10',
+        payMode: 'credit', note: '为此单采购', txnId: null,
+        lines: [{ id: 'pl1', purchaseId: 'pu1', name: '代采件', qty: 2, unitCost: 5000, productId: null }],
+      });
+      expect(p.lines.length).toBe(1);
+      const got = (await repo.getPurchase('pu1'))!;
+      expect(got.lines[0]!.unitCost).toBe(5000);
+      expect(got.payMode).toBe('credit');
+      // 跨账本供应商被拒
+      await expect(
+        repo.addPurchase({ id: 'puX', bookId: B1, supplierId: 'su1', orderId: 'o1', date: '2026-06-10', payMode: 'cash', note: '', txnId: null, lines: [] }),
+      ).rejects.toThrow(/同账本/);
+      expect((await repo.listPurchases({ orderId: 'o1' })).map((x) => x.id)).toEqual(['pu1']);
+      expect((await repo.listPurchases({ supplierId: 'su1' })).length).toBe(1);
     });
 
     it('订单行可关联商品 id 并往返；自由文本行 productId=null', async () => {

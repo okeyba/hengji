@@ -1,5 +1,5 @@
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Product, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -16,6 +16,7 @@ import type {
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
+  StoredPurchase,
   StoredReconciliation,
   StoredSetting,
   StoredSettlement,
@@ -48,6 +49,7 @@ export class InMemoryRepository implements Repository {
   private readonly orders = new Map<string, StoredOrder>();
   private readonly settlements = new Map<string, StoredSettlement>();
   private readonly products = new Map<string, StoredProduct>();
+  private readonly purchases = new Map<string, StoredPurchase>();
   private readonly settings = new Map<string, StoredSetting>();
   private readonly reconciliations = new Map<string, StoredReconciliation>();
   private readonly inventoryMovements = new Map<string, StoredInventoryMovement>();
@@ -385,6 +387,38 @@ export class InMemoryRepository implements Repository {
       if (query.orderId && s.orderId !== query.orderId) continue;
       if (query.counterpartyId && s.counterpartyId !== query.counterpartyId) continue;
       out.push(clone(s));
+    }
+    return sortByDateDesc(out);
+  }
+
+  // ---- 生意：代采采购单（C2d）----
+  async addPurchase(purchase: Purchase): Promise<StoredPurchase> {
+    if (this.purchases.has(purchase.id)) throw new Error(`采购单已存在：${purchase.id}`);
+    this.liveBook(purchase.bookId);
+    const sup = this.liveSupplier(purchase.supplierId);
+    if (sup.bookId !== purchase.bookId) throw new Error('采购单供应商必须与采购单同账本');
+    const o = this.orders.get(purchase.orderId);
+    if (!o || o.deleted) throw new Error(`关联订单不存在：${purchase.orderId}`);
+    if (o.bookId !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    const ts = this.now();
+    const stored: StoredPurchase = { ...clone(purchase), createdAt: ts, updatedAt: ts, deleted: false };
+    this.purchases.set(purchase.id, stored);
+    return clone(stored);
+  }
+
+  async getPurchase(id: string): Promise<StoredPurchase | null> {
+    const p = this.purchases.get(id);
+    return p && !p.deleted ? clone(p) : null;
+  }
+
+  async listPurchases(query: { bookId?: string; orderId?: string; supplierId?: string } = {}): Promise<StoredPurchase[]> {
+    const out: StoredPurchase[] = [];
+    for (const p of this.purchases.values()) {
+      if (p.deleted) continue;
+      if (query.bookId && p.bookId !== query.bookId) continue;
+      if (query.orderId && p.orderId !== query.orderId) continue;
+      if (query.supplierId && p.supplierId !== query.supplierId) continue;
+      out.push(clone(p));
     }
     return sortByDateDesc(out);
   }

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { agingBuckets, convertAmount, fromMinor, orderTotal, toMinor } from '@app/core';
+import { agingBuckets, convertAmount, fromMinor, orderTotal, purchaseTotal, toMinor } from '@app/core';
 import type { OrderLine, OrderPaymentStatus, OrderStatus } from '@app/core';
-import type { StoredCustomer, StoredInventoryMovement, StoredOrder, StoredProduct, StoredSettlement } from '@app/store';
+import type { StoredCustomer, StoredInventoryMovement, StoredOrder, StoredProduct, StoredPurchase, StoredSettlement, StoredSupplier } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
 import { currencyDef, currencyList, fmtMoney, todayISO } from '../format';
-import { completeOrder, customerOrderStatus, receivableSummary, recordCollection } from '../biz';
+import { completeOrder, customerOrderStatus, receivableSummary, recordCollection, recordOrderPurchase } from '../biz';
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending_purchase: { label: '待采购', cls: '' },
@@ -28,10 +28,12 @@ const emptyLine = (): LineDraft => ({ key: genId(), productId: '', name: '', qty
 export default function Orders({ data }: { data: AppData }) {
   const { repo, book, accounts, txns, reload, convert, mcEnabled } = data;
   const [customers, setCustomers] = useState<StoredCustomer[]>([]);
+  const [suppliers, setSuppliers] = useState<StoredSupplier[]>([]);
   const [orders, setOrders] = useState<StoredOrder[]>([]);
   const [products, setProducts] = useState<StoredProduct[]>([]);
   const [settlements, setSettlements] = useState<StoredSettlement[]>([]);
   const [movements, setMovements] = useState<StoredInventoryMovement[]>([]);
+  const [purchases, setPurchases] = useState<StoredPurchase[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   // 新建订单表单
@@ -47,19 +49,31 @@ export default function Orders({ data }: { data: AppData }) {
   const [cDate, setCDate] = useState(todayISO());
   const [cAcct, setCAcct] = useState('');
 
+  // 为此单采购表单（代采，按订单展开）
+  const [purchaseFor, setPurchaseFor] = useState<string | null>(null);
+  const [pSup, setPSup] = useState('');
+  const [pMode, setPMode] = useState<'cash' | 'credit'>('credit');
+  const [pAcct, setPAcct] = useState('');
+  const [pDate, setPDate] = useState(todayISO());
+  const [pCosts, setPCosts] = useState<Record<string, string>>({});
+
   async function refresh(): Promise<void> {
-    const [cs, os, ps, ss, ms] = await Promise.all([
+    const [cs, sup, os, ps, ss, ms, pu] = await Promise.all([
       repo.listCustomers({ bookId: book.id, includeArchived: true }),
+      repo.listSuppliers({ bookId: book.id }),
       repo.listOrders({ bookId: book.id }),
       repo.listProducts({ bookId: book.id }),
       repo.listSettlements({ bookId: book.id }),
       repo.listInventoryMovements({ bookId: book.id }),
+      repo.listPurchases({ bookId: book.id }),
     ]);
     setCustomers(cs);
+    setSuppliers(sup);
     setOrders(os);
     setProducts(ps);
     setSettlements(ss);
     setMovements(ms);
+    setPurchases(pu);
   }
   useEffect(() => {
     void refresh();
@@ -89,7 +103,7 @@ export default function Orders({ data }: { data: AppData }) {
     [outstanding, convert],
   );
 
-  // 每单营业成本（人民币）= 该单 out 出库流水的 Σ|数量|×均价。供「每单毛利」用。
+  // 每单库存成本（人民币）= 该单 out 出库流水的 Σ|数量|×均价。
   const cogsByOrder = useMemo(() => {
     const m = new Map<string, number>();
     for (const mv of movements) {
@@ -98,9 +112,16 @@ export default function Orders({ data }: { data: AppData }) {
     }
     return m;
   }, [movements]);
-  // 毛利按人民币本位：订单收入折人民币 − 营业成本（成本恒 CNY）。
+  // 每单代采成本（人民币）= 该单各采购单总额之和（成本直挂订单，不过库存）。
+  const dropshipCostByOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of purchases) m.set(p.orderId, (m.get(p.orderId) ?? 0) + purchaseTotal(p.lines));
+    return m;
+  }, [purchases]);
+  // 毛利按人民币本位：订单收入折人民币 − 总成本（库存 + 代采，恒 CNY）。
   const cnyCtx = { rates: convert.rates, scales: convert.scales, display: 'CNY' };
-  const marginOf = (o: StoredOrder): number => convertAmount(orderTotal(o.lines), o.currency, cnyCtx) - (cogsByOrder.get(o.id) ?? 0);
+  const costOf = (o: StoredOrder): number => (cogsByOrder.get(o.id) ?? 0) + (dropshipCostByOrder.get(o.id) ?? 0);
+  const marginOf = (o: StoredOrder): number => convertAmount(orderTotal(o.lines), o.currency, cnyCtx) - costOf(o);
 
   function setLine(key: string, patch: Partial<LineDraft>): void {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -137,6 +158,8 @@ export default function Orders({ data }: { data: AppData }) {
       unitPrice: toMinor(Number(l.price), oDecimals),
       productId: l.productId || null,
     }));
+    // 含代采品 → 初始「待采购」（须先为此单采购才能发货/完成）；否则直接「待发货」。
+    const hasDropship = orderLines.some((l) => l.productId && products.find((p) => p.id === l.productId)?.dropship);
     try {
       await repo.addOrder({
         id: orderId,
@@ -144,7 +167,7 @@ export default function Orders({ data }: { data: AppData }) {
         customerId: effCust,
         date,
         currency: oCur,
-        status: 'pending_ship',
+        status: hasDropship ? 'pending_purchase' : 'pending_ship',
         note: note.trim(),
         revenueTxnId: null,
         lines: orderLines,
@@ -174,7 +197,11 @@ export default function Orders({ data }: { data: AppData }) {
   }
 
   async function doCancel(order: StoredOrder): Promise<void> {
-    if (!confirm(`取消订单（${custName(order.customerId)} · ${fmtMoney(orderTotal(order.lines), order.currency)}）？未完成订单无账务影响。`)) return;
+    if (purchases.some((p) => p.orderId === order.id)) {
+      setErr('本单已为此单采购，不能直接取消（采购已产生账务，需手动反向处理）');
+      return;
+    }
+    if (!confirm(`取消订单（${custName(order.customerId)} · ${fmtMoney(orderTotal(order.lines), order.currency)}）？未采购订单无账务影响。`)) return;
     await repo.updateOrder(order.id, { status: 'cancelled' });
     await refresh();
   }
@@ -188,6 +215,56 @@ export default function Orders({ data }: { data: AppData }) {
     setCDate(todayISO());
     setCAcct('');
     setErr(null);
+  }
+
+  function openPurchase(order: StoredOrder): void {
+    setErr(null);
+    setPurchaseFor(order.id);
+    setPSup(suppliers[0]?.id ?? '');
+    setPMode('credit');
+    setPAcct('');
+    setPDate(todayISO());
+    // 预填各代采行采购价 = 商品进价（人民币）
+    const costs: Record<string, string> = {};
+    for (const l of order.lines) {
+      const prod = l.productId ? products.find((p) => p.id === l.productId) : undefined;
+      if (prod?.dropship) costs[l.id] = String(fromMinor(prod.costPrice));
+    }
+    setPCosts(costs);
+  }
+
+  async function submitPurchase(order: StoredOrder, dsLines: OrderLine[], payAcctId: string): Promise<void> {
+    setErr(null);
+    const sup = suppliers.find((s) => s.id === (pSup || suppliers[0]?.id));
+    if (!sup) {
+      setErr('请先到「供应商」页添加供应商');
+      return;
+    }
+    if (pMode === 'cash' && !payAcctId) {
+      setErr('现结采购需选人民币付款账户');
+      return;
+    }
+    const lines = dsLines.map((l) => ({ productId: l.productId, name: l.name, qty: l.qty, unitCost: toMinor(Number(pCosts[l.id] ?? 0)) }));
+    if (lines.some((l) => !Number.isFinite(l.unitCost) || l.unitCost < 0)) {
+      setErr('请为每个代采品填写有效采购价');
+      return;
+    }
+    try {
+      await recordOrderPurchase(repo, book, {
+        order,
+        supplier: sup,
+        lines,
+        date: pDate,
+        payMode: pMode,
+        payAccountId: pMode === 'cash' ? payAcctId : undefined,
+        note: '',
+      });
+      setPurchaseFor(null);
+      await refresh();
+      await reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function doCollect(order: StoredOrder): Promise<void> {
@@ -383,13 +460,23 @@ export default function Orders({ data }: { data: AppData }) {
                 <span className="bnum">{fmtMoney(orderTotal(o.lines), o.currency)}</span>
               </div>
               <div className="ord-items">{o.lines.map((l) => `${l.name}×${l.qty}`).join('，')}</div>
-              {o.status === 'completed' && (cogsByOrder.get(o.id) ?? 0) > 0 && (
+              {o.status === 'completed' && costOf(o) > 0 && (
                 <div className="ord-margin">
                   毛利 <strong className={marginOf(o) >= 0 ? 'pos' : 'neg'}>{fmtMoney(marginOf(o))}</strong>
-                  <span className="muted"> · 成本 {fmtMoney(cogsByOrder.get(o.id)!)}{o.currency !== 'CNY' ? '（收入已折人民币）' : ''}</span>
+                  <span className="muted"> · 成本 {fmtMoney(costOf(o))}{o.currency !== 'CNY' ? '（收入已折人民币）' : ''}</span>
                 </div>
               )}
               <div className="arow-btns">
+                {o.status === 'pending_purchase' && (
+                  <>
+                    <button className="lnk" onClick={() => openPurchase(o)}>
+                      为此单采购
+                    </button>
+                    <button className="lnk danger" onClick={() => void doCancel(o)}>
+                      取消
+                    </button>
+                  </>
+                )}
                 {o.status === 'pending_ship' && (
                   <>
                     <button className="lnk" onClick={() => void doComplete(o)}>
@@ -406,6 +493,76 @@ export default function Orders({ data }: { data: AppData }) {
                   </button>
                 )}
               </div>
+              {purchaseFor === o.id && (() => {
+                const dsLines = o.lines.filter((l) => l.productId && products.find((p) => p.id === l.productId)?.dropship);
+                const purAccts = cashAccounts.filter((a) => a.currency === 'CNY' && a.name !== '库存商品' && a.name !== '代采在途成本');
+                const effPurAcct = purAccts.some((a) => a.id === pAcct) ? pAcct : (purAccts[0]?.id ?? '');
+                return (
+                  <div className="collect">
+                    <p className="muted small" style={{ marginTop: 0 }}>为此单代采品采购，录入采购价。成本直挂订单，完成时结转。</p>
+                    <div className="qgrid">
+                      <label>
+                        供应商
+                        {suppliers.length === 0 ? (
+                          <span className="muted small">无供应商，请先去「供应商」页添加</span>
+                        ) : (
+                          <select value={pSup || suppliers[0]?.id} onChange={(e) => setPSup(e.target.value)}>
+                            {suppliers.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </label>
+                      <label>
+                        付款方式
+                        <select value={pMode} onChange={(e) => setPMode(e.target.value as 'cash' | 'credit')}>
+                          <option value="credit">赊账（记应付）</option>
+                          <option value="cash">现结</option>
+                        </select>
+                      </label>
+                      {pMode === 'cash' && (
+                        <label>
+                          付款账户
+                          <select value={effPurAcct} onChange={(e) => setPAcct(e.target.value)}>
+                            {purAccts.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      <label>
+                        日期
+                        <input type="date" value={pDate} onChange={(e) => setPDate(e.target.value)} />
+                      </label>
+                    </div>
+                    <div className="ds-lines">
+                      {dsLines.map((l) => (
+                        <label key={l.id} className="ds-line">
+                          <span>{l.name} ×{l.qty} · 采购价(¥)</span>
+                          <input
+                            inputMode="decimal"
+                            value={pCosts[l.id] ?? ''}
+                            onChange={(e) => setPCosts((c) => ({ ...c, [l.id]: e.target.value }))}
+                            placeholder="0.00"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div className="ord-foot">
+                      <button className="lnk" onClick={() => setPurchaseFor(null)}>
+                        取消
+                      </button>
+                      <button className="btn btn-primary" onClick={() => void submitPurchase(o, dsLines, effPurAcct)}>
+                        确认采购
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
               {collectFor === o.id && (() => {
                 // 收款账户限同币种（跨币种收款属换汇，不在此处理）
                 const collectAccts = cashAccounts.filter((a) => a.currency === o.currency);

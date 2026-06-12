@@ -1,4 +1,4 @@
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Product, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 
 /** 每条记录都带的同步元数据，为将来的云同步预留。 */
 export interface SyncMeta {
@@ -17,6 +17,7 @@ export type StoredSupplier = Supplier & SyncMeta;
 export type StoredOrder = Order & SyncMeta;
 export type StoredSettlement = Settlement & SyncMeta;
 export type StoredProduct = Product & SyncMeta;
+export type StoredPurchase = Purchase & SyncMeta;
 export type StoredReconciliation = Reconciliation & SyncMeta;
 export type StoredInventoryMovement = InventoryMovement & SyncMeta;
 
@@ -76,6 +77,7 @@ export interface ProductPatch {
   costPrice?: number;
   salePrice?: number;
   isStock?: boolean;
+  dropship?: boolean;
   unit?: string;
   archived?: boolean;
 }
@@ -150,6 +152,12 @@ export interface Repository {
   getProduct(id: string): Promise<StoredProduct | null>;
   listProducts(opts?: { bookId?: string; includeArchived?: boolean }): Promise<StoredProduct[]>;
   updateProduct(id: string, patch: ProductPatch): Promise<StoredProduct>;
+
+  // 代采采购单（v0.2 C2d 期）：代采品「为此单采购」，一张采购单对应一张订单。采购单创建后不改。
+  // 约束：采购单的供应商、关联订单必须与采购单同账本。
+  addPurchase(purchase: Purchase): Promise<StoredPurchase>;
+  getPurchase(id: string): Promise<StoredPurchase | null>;
+  listPurchases(query?: { bookId?: string; orderId?: string; supplierId?: string }): Promise<StoredPurchase[]>;
 
   // 库存出入库流水（v0.2 C2 期）：只追加、不改（盘点纠错另记一笔 adjust）。
   // 在手数量/移动加权均价由 core inventoryState 回放流水聚合，不存死值。约束：商品须与流水同账本。

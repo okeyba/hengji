@@ -13,6 +13,7 @@ export default function Products({ data }: { data: AppData }) {
   const [sale, setSale] = useState('');
   const [unit, setUnit] = useState('');
   const [isStock, setIsStock] = useState(false);
+  const [dropship, setDropship] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const [editId, setEditId] = useState<string | null>(null);
@@ -21,6 +22,7 @@ export default function Products({ data }: { data: AppData }) {
   const [eSale, setESale] = useState('');
   const [eUnit, setEUnit] = useState('');
   const [eStock, setEStock] = useState(false);
+  const [eDropship, setEDropship] = useState(false);
 
   async function refresh(): Promise<void> {
     setList(await repo.listProducts({ bookId: book.id, includeArchived: true }));
@@ -54,12 +56,13 @@ export default function Products({ data }: { data: AppData }) {
       setErr('进价/售价需为非负数');
       return;
     }
-    await repo.addProduct({ id: genId(), bookId: book.id, name: nm, costPrice: c, salePrice: s, isStock, unit: unit.trim(), archived: false });
+    await repo.addProduct({ id: genId(), bookId: book.id, name: nm, costPrice: c, salePrice: s, isStock, dropship, unit: unit.trim(), archived: false });
     setName('');
     setCost('');
     setSale('');
     setUnit('');
     setIsStock(false);
+    setDropship(false);
     await refresh();
   }
 
@@ -70,6 +73,7 @@ export default function Products({ data }: { data: AppData }) {
     setESale(String(fromMinor(p.salePrice)));
     setEUnit(p.unit);
     setEStock(p.isStock);
+    setEDropship(p.dropship);
     setErr(null);
   }
 
@@ -90,7 +94,7 @@ export default function Products({ data }: { data: AppData }) {
       setErr('进价/售价需为非负数');
       return;
     }
-    await repo.updateProduct(p.id, { name: nm, costPrice: c, salePrice: s, isStock: eStock, unit: eUnit.trim() });
+    await repo.updateProduct(p.id, { name: nm, costPrice: c, salePrice: s, isStock: eStock, dropship: eDropship, unit: eUnit.trim() });
     setEditId(null);
     await refresh();
   }
@@ -132,7 +136,10 @@ export default function Products({ data }: { data: AppData }) {
                   </label>
                 </div>
                 <label className="chkline">
-                  <input type="checkbox" checked={eStock} onChange={(e) => setEStock(e.target.checked)} /> 库存品（库存/成本结转 C2 期启用）
+                  <input type="checkbox" checked={eStock} onChange={(e) => { setEStock(e.target.checked); if (e.target.checked) setEDropship(false); }} /> 库存品（先囤货、移动加权均价）
+                </label>
+                <label className="chkline">
+                  <input type="checkbox" checked={eDropship} onChange={(e) => { setEDropship(e.target.checked); if (e.target.checked) setEStock(false); }} /> 代采品（接单后为此单采购、成本直挂订单）
                 </label>
                 {err && <p className="form-err" style={{ marginTop: 8 }}>{err}</p>}
                 <div className="arow-btns" style={{ marginTop: 8 }}>
@@ -150,6 +157,7 @@ export default function Products({ data }: { data: AppData }) {
                   {p.name}
                   {p.unit && <span className="muted"> / {p.unit}</span>}
                   {p.isStock && <span className="chip"> 库存品</span>}
+                  {p.dropship && <span className="chip"> 代采品</span>}
                   {p.archived && <span className="chip"> 已归档</span>}
                 </span>
                 <span className="bnum">
@@ -190,7 +198,10 @@ export default function Products({ data }: { data: AppData }) {
           </label>
         </div>
         <label className="chkline">
-          <input type="checkbox" checked={isStock} onChange={(e) => setIsStock(e.target.checked)} /> 库存品（库存/成本结转 C2 期启用）
+          <input type="checkbox" checked={isStock} onChange={(e) => { setIsStock(e.target.checked); if (e.target.checked) setDropship(false); }} /> 库存品（先囤货、移动加权均价）
+        </label>
+        <label className="chkline">
+          <input type="checkbox" checked={dropship} onChange={(e) => { setDropship(e.target.checked); if (e.target.checked) setIsStock(false); }} /> 代采品（接单后为此单采购、成本直挂订单）
         </label>
         {!editId && err && <p className="form-err" style={{ marginTop: 8 }}>{err}</p>}
         <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={() => void add()}>

@@ -1,4 +1,4 @@
-import type { OrderLine, Transaction } from './types';
+import type { OrderLine, PurchaseLine, Transaction } from './types';
 import { expandEntry } from './ledger';
 
 /**
@@ -14,6 +14,11 @@ export function lineTotal(line: Pick<OrderLine, 'qty' | 'unitPrice'>): number {
 /** 订单总额（最小单位）= 各行金额之和。 */
 export function orderTotal(lines: ReadonlyArray<Pick<OrderLine, 'qty' | 'unitPrice'>>): number {
   return lines.reduce((sum, l) => sum + lineTotal(l), 0);
+}
+
+/** 采购单总额（最小单位，CNY）= 各行 round(数量 × 采购单价) 之和。 */
+export function purchaseTotal(lines: ReadonlyArray<Pick<PurchaseLine, 'qty' | 'unitCost'>>): number {
+  return lines.reduce((sum, l) => sum + Math.round(l.qty * l.unitCost), 0);
 }
 
 interface EntryOpts {

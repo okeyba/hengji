@@ -1,6 +1,6 @@
 import Database from '@tauri-apps/plugin-sql';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Posting, Product, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -17,6 +17,7 @@ import type {
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
+  StoredPurchase,
   StoredReconciliation,
   StoredSetting,
   StoredSettlement,
@@ -37,6 +38,8 @@ import {
   toOrderLine,
   toPosting,
   toProduct,
+  toPurchase,
+  toPurchaseLine,
   toReconciliation,
   toSetting,
   toSettlement,
@@ -53,6 +56,8 @@ import type {
   OrderRow,
   PostingRow,
   ProductRow,
+  PurchaseLineRow,
+  PurchaseRow,
   ReconciliationRow,
   SettingRow,
   SettlementRow,
@@ -661,9 +666,9 @@ export class TauriSqlRepository implements Repository {
     await this.assertBook(product.bookId);
     const ts = this.now();
     await this.db.execute(
-      `INSERT INTO products (id, book_id, name, cost_price, sale_price, is_stock, unit, archived, created_at, updated_at, deleted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
-      [product.id, product.bookId, product.name, product.costPrice, product.salePrice, product.isStock ? 1 : 0, product.unit, product.archived ? 1 : 0, ts, ts],
+      `INSERT INTO products (id, book_id, name, cost_price, sale_price, is_stock, dropship, unit, archived, created_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0)`,
+      [product.id, product.bookId, product.name, product.costPrice, product.salePrice, product.isStock ? 1 : 0, product.dropship ? 1 : 0, product.unit, product.archived ? 1 : 0, ts, ts],
     );
     return (await this.getProduct(product.id))!;
   }
@@ -690,10 +695,83 @@ export class TauriSqlRepository implements Repository {
     if (!cur) throw new Error(`商品不存在：${id}`);
     const next: StoredProduct = { ...cur, ...patch, updatedAt: this.now() };
     await this.db.execute(
-      'UPDATE products SET name=$1, cost_price=$2, sale_price=$3, is_stock=$4, unit=$5, archived=$6, updated_at=$7 WHERE id=$8',
-      [next.name, next.costPrice, next.salePrice, next.isStock ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id],
+      'UPDATE products SET name=$1, cost_price=$2, sale_price=$3, is_stock=$4, dropship=$5, unit=$6, archived=$7, updated_at=$8 WHERE id=$9',
+      [next.name, next.costPrice, next.salePrice, next.isStock ? 1 : 0, next.dropship ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id],
     );
     return (await this.getProduct(id))!;
+  }
+
+  // ---- 生意：代采采购单（C2d）----
+  private async insertPurchaseLines(purchaseId: string, lines: Purchase['lines']): Promise<void> {
+    for (const l of lines) {
+      await this.db.execute(
+        'INSERT INTO purchase_lines (id, purchase_id, name, qty, unit_cost, product_id) VALUES ($1, $2, $3, $4, $5, $6)',
+        [l.id, purchaseId, l.name, l.qty, l.unitCost, l.productId],
+      );
+    }
+  }
+
+  async addPurchase(purchase: Purchase): Promise<StoredPurchase> {
+    if (await this.exists('SELECT 1 FROM purchases WHERE id = $1', [purchase.id])) {
+      throw new Error(`采购单已存在：${purchase.id}`);
+    }
+    await this.assertBook(purchase.bookId);
+    if ((await this.supplierBookId(purchase.supplierId)) !== purchase.bookId) throw new Error('采购单供应商必须与采购单同账本');
+    const orows = await this.db.select<Array<{ book_id: string }>>('SELECT book_id FROM orders WHERE id = $1 AND deleted = 0', [purchase.orderId]);
+    if (!orows[0]) throw new Error(`关联订单不存在：${purchase.orderId}`);
+    if (orows[0].book_id !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    const ts = this.now();
+    await this.db.execute(
+      `INSERT INTO purchases (id, book_id, supplier_id, order_id, date, pay_mode, note, txn_id, created_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
+      [purchase.id, purchase.bookId, purchase.supplierId, purchase.orderId, purchase.date, purchase.payMode, purchase.note, purchase.txnId, ts, ts],
+    );
+    await this.insertPurchaseLines(purchase.id, purchase.lines);
+    return (await this.getPurchase(purchase.id))!;
+  }
+
+  async getPurchase(id: string): Promise<StoredPurchase | null> {
+    const rows = await this.db.select<PurchaseRow[]>('SELECT * FROM purchases WHERE id = $1 AND deleted = 0', [id]);
+    const head = rows[0];
+    if (!head) return null;
+    const lineRows = await this.db.select<PurchaseLineRow[]>('SELECT * FROM purchase_lines WHERE purchase_id = $1 ORDER BY rowid', [id]);
+    return toPurchase(head, lineRows.map(toPurchaseLine));
+  }
+
+  async listPurchases(query: { bookId?: string; orderId?: string; supplierId?: string } = {}): Promise<StoredPurchase[]> {
+    const cond = ['deleted = 0'];
+    const params: unknown[] = [];
+    if (query.bookId) {
+      params.push(query.bookId);
+      cond.push(`book_id = $${params.length}`);
+    }
+    if (query.orderId) {
+      params.push(query.orderId);
+      cond.push(`order_id = $${params.length}`);
+    }
+    if (query.supplierId) {
+      params.push(query.supplierId);
+      cond.push(`supplier_id = $${params.length}`);
+    }
+    const rows = await this.db.select<PurchaseRow[]>(
+      `SELECT * FROM purchases WHERE ${cond.join(' AND ')} ORDER BY date DESC, created_at DESC, id DESC`,
+      params,
+    );
+    if (rows.length === 0) return [];
+    const byPurchase = new Map<string, PurchaseLineRow[]>();
+    for (const batch of chunk(rows.map((r) => r.id), 500)) {
+      const placeholders = batch.map((_, i) => `$${i + 1}`).join(', ');
+      const lineRows = await this.db.select<PurchaseLineRow[]>(
+        `SELECT * FROM purchase_lines WHERE purchase_id IN (${placeholders}) ORDER BY rowid`,
+        batch,
+      );
+      for (const lr of lineRows) {
+        const arr = byPurchase.get(lr.purchase_id) ?? [];
+        arr.push(lr);
+        byPurchase.set(lr.purchase_id, arr);
+      }
+    }
+    return rows.map((r) => toPurchase(r, (byPurchase.get(r.id) ?? []).map(toPurchaseLine)));
   }
 
   // ---- 生意：库存出入库 ----

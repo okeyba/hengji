@@ -1,4 +1,4 @@
-import type { Account, Book, InventoryKind, OrderLine, Posting, SettlementDirection, CounterpartyType, OrderStatus } from '@app/core';
+import type { Account, Book, InventoryKind, OrderLine, Posting, PurchaseLine, SettlementDirection, CounterpartyType, OrderStatus } from '@app/core';
 import type {
   StoredAccount,
   StoredBook,
@@ -7,6 +7,7 @@ import type {
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
+  StoredPurchase,
   StoredSupplier,
   StoredReconciliation,
   StoredSetting,
@@ -111,11 +112,33 @@ export interface ProductRow {
   cost_price: number;
   sale_price: number;
   is_stock: number;
+  dropship: number;
   unit: string;
   archived: number;
   created_at: string;
   updated_at: string;
   deleted: number;
+}
+export interface PurchaseRow {
+  id: string;
+  book_id: string;
+  supplier_id: string;
+  order_id: string;
+  date: string;
+  pay_mode: string;
+  note: string;
+  txn_id: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted: number;
+}
+export interface PurchaseLineRow {
+  id: string;
+  purchase_id: string;
+  name: string;
+  qty: number;
+  unit_cost: number;
+  product_id: string | null;
 }
 export interface SettlementRow {
   id: string;
@@ -269,8 +292,30 @@ export function toProduct(r: ProductRow): StoredProduct {
     costPrice: r.cost_price,
     salePrice: r.sale_price,
     isStock: r.is_stock !== 0,
+    dropship: r.dropship !== 0,
     unit: r.unit,
     archived: r.archived !== 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deleted: r.deleted !== 0,
+  };
+}
+
+export function toPurchaseLine(r: PurchaseLineRow): PurchaseLine {
+  return { id: r.id, purchaseId: r.purchase_id, name: r.name, qty: r.qty, unitCost: r.unit_cost, productId: r.product_id };
+}
+
+export function toPurchase(r: PurchaseRow, lines: PurchaseLine[]): StoredPurchase {
+  return {
+    id: r.id,
+    bookId: r.book_id,
+    supplierId: r.supplier_id,
+    orderId: r.order_id,
+    date: r.date,
+    payMode: r.pay_mode === 'credit' ? 'credit' : 'cash',
+    note: r.note,
+    txnId: r.txn_id,
+    lines,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     deleted: r.deleted !== 0,

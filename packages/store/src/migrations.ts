@@ -14,6 +14,8 @@
  * - m8：订单结算币种 orders.currency（默认 'CNY'）；多币种业务 AR。既有订单回落 CNY。
  * - m9：库存出入库流水 inventory_movements（C2 库存）；纯新增表，不动既有数据。
  * - m10：供应商档案 suppliers（C2 应付）；镜像 customers，纯新增表，不动既有数据。
+ * - m11：代采 dropship（C2d）；products.dropship 列 + purchases/purchase_lines 表（代采为此单采购）。
+ *   既有商品 dropship 默认 0；纯新增列/表，不动既有数据。
  */
 
 export interface SqlRunner {
@@ -256,7 +258,38 @@ const M10: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_suppliers_book ON suppliers(book_id)`,
 ];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10];
+// m11：代采 dropship（C2d）。products.dropship 标记代采品；purchases/purchase_lines 存「为此单采购」
+// 单据（orderId 关联订单，pay_mode 现结/赊账）。成本计入代采在途、订单完成结转 COGS（不过库存）。纯新增。
+const M11: string[] = [
+  `ALTER TABLE products ADD COLUMN dropship INTEGER NOT NULL DEFAULT 0`,
+  `CREATE TABLE IF NOT EXISTS purchases (
+    id TEXT PRIMARY KEY,
+    book_id TEXT NOT NULL,
+    supplier_id TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    pay_mode TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    txn_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS purchase_lines (
+    id TEXT PRIMARY KEY,
+    purchase_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    qty REAL NOT NULL,
+    unit_cost INTEGER NOT NULL,
+    product_id TEXT,
+    FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_purchases_book ON purchases(book_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_purchases_order ON purchases(order_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_purchase_lines_purchase ON purchase_lines(purchase_id)`,
+];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

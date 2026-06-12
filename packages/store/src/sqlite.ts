@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Posting, Product, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -17,6 +17,7 @@ import type {
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
+  StoredPurchase,
   StoredReconciliation,
   StoredSetting,
   StoredSettlement,
@@ -37,6 +38,8 @@ import {
   toOrderLine,
   toPosting,
   toProduct,
+  toPurchase,
+  toPurchaseLine,
   toReconciliation,
   toSetting,
   toSettlement,
@@ -53,6 +56,8 @@ import type {
   OrderRow,
   PostingRow,
   ProductRow,
+  PurchaseLineRow,
+  PurchaseRow,
   ReconciliationRow,
   SettingRow,
   SettlementRow,
@@ -662,8 +667,8 @@ export class SqliteRepository implements Repository {
     const ts = this.now();
     this.db
       .prepare(
-        `INSERT INTO products (id, book_id, name, cost_price, sale_price, is_stock, unit, archived, created_at, updated_at, deleted)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        `INSERT INTO products (id, book_id, name, cost_price, sale_price, is_stock, dropship, unit, archived, created_at, updated_at, deleted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       )
       .run(
         product.id,
@@ -672,6 +677,7 @@ export class SqliteRepository implements Repository {
         product.costPrice,
         product.salePrice,
         product.isStock ? 1 : 0,
+        product.dropship ? 1 : 0,
         product.unit,
         product.archived ? 1 : 0,
         ts,
@@ -704,9 +710,78 @@ export class SqliteRepository implements Repository {
     if (!cur) throw new Error(`商品不存在：${id}`);
     const next: StoredProduct = { ...cur, ...patch, updatedAt: this.now() };
     this.db
-      .prepare(`UPDATE products SET name=?, cost_price=?, sale_price=?, is_stock=?, unit=?, archived=?, updated_at=? WHERE id=?`)
-      .run(next.name, next.costPrice, next.salePrice, next.isStock ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id);
+      .prepare(`UPDATE products SET name=?, cost_price=?, sale_price=?, is_stock=?, dropship=?, unit=?, archived=?, updated_at=? WHERE id=?`)
+      .run(next.name, next.costPrice, next.salePrice, next.isStock ? 1 : 0, next.dropship ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id);
     return (await this.getProduct(id))!;
+  }
+
+  // ---- 生意：代采采购单（C2d）----
+  private insertPurchaseLines(purchaseId: string, lines: Purchase['lines']): void {
+    const stmt = this.db.prepare(`INSERT INTO purchase_lines (id, purchase_id, name, qty, unit_cost, product_id) VALUES (?, ?, ?, ?, ?, ?)`);
+    for (const l of lines) stmt.run(l.id, purchaseId, l.name, l.qty, l.unitCost, l.productId);
+  }
+
+  async addPurchase(purchase: Purchase): Promise<StoredPurchase> {
+    if (this.db.prepare('SELECT 1 FROM purchases WHERE id = ?').get(purchase.id)) {
+      throw new Error(`采购单已存在：${purchase.id}`);
+    }
+    this.assertBook(purchase.bookId);
+    if (this.supplierBookId(purchase.supplierId) !== purchase.bookId) throw new Error('采购单供应商必须与采购单同账本');
+    const o = this.db.prepare('SELECT book_id FROM orders WHERE id = ? AND deleted = 0').get(purchase.orderId) as { book_id: string } | undefined;
+    if (!o) throw new Error(`关联订单不存在：${purchase.orderId}`);
+    if (o.book_id !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    const ts = this.now();
+    this.tx(() => {
+      this.db
+        .prepare(
+          `INSERT INTO purchases (id, book_id, supplier_id, order_id, date, pay_mode, note, txn_id, created_at, updated_at, deleted)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        )
+        .run(purchase.id, purchase.bookId, purchase.supplierId, purchase.orderId, purchase.date, purchase.payMode, purchase.note, purchase.txnId, ts, ts);
+      this.insertPurchaseLines(purchase.id, purchase.lines);
+    });
+    return (await this.getPurchase(purchase.id))!;
+  }
+
+  async getPurchase(id: string): Promise<StoredPurchase | null> {
+    const r = this.db.prepare('SELECT * FROM purchases WHERE id = ? AND deleted = 0').get(id) as PurchaseRow | undefined;
+    if (!r) return null;
+    const lines = (this.db.prepare('SELECT * FROM purchase_lines WHERE purchase_id = ? ORDER BY rowid').all(id) as unknown as PurchaseLineRow[]).map(toPurchaseLine);
+    return toPurchase(r, lines);
+  }
+
+  async listPurchases(query: { bookId?: string; orderId?: string; supplierId?: string } = {}): Promise<StoredPurchase[]> {
+    const cond = ['deleted = 0'];
+    const params: string[] = [];
+    if (query.bookId) {
+      cond.push('book_id = ?');
+      params.push(query.bookId);
+    }
+    if (query.orderId) {
+      cond.push('order_id = ?');
+      params.push(query.orderId);
+    }
+    if (query.supplierId) {
+      cond.push('supplier_id = ?');
+      params.push(query.supplierId);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM purchases WHERE ${cond.join(' AND ')} ORDER BY date DESC, created_at DESC, id DESC`)
+      .all(...params) as unknown as PurchaseRow[];
+    if (rows.length === 0) return [];
+    const byPurchase = new Map<string, PurchaseLineRow[]>();
+    for (const batch of chunk(rows.map((r) => r.id), 500)) {
+      const placeholders = batch.map(() => '?').join(', ');
+      const lineRows = this.db
+        .prepare(`SELECT * FROM purchase_lines WHERE purchase_id IN (${placeholders}) ORDER BY rowid`)
+        .all(...batch) as unknown as PurchaseLineRow[];
+      for (const lr of lineRows) {
+        const arr = byPurchase.get(lr.purchase_id) ?? [];
+        arr.push(lr);
+        byPurchase.set(lr.purchase_id, arr);
+      }
+    }
+    return rows.map((r) => toPurchase(r, (byPurchase.get(r.id) ?? []).map(toPurchaseLine)));
   }
 
   // ---- 生意：库存出入库 ----

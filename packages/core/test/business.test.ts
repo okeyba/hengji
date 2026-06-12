@@ -8,6 +8,7 @@ import {
   agingBuckets,
   creditPurchaseEntry,
   supplierPaymentEntry,
+  purchaseTotal,
   accountBalance,
   isBalanced,
   toMinor,
@@ -38,6 +39,11 @@ describe('orderTotal / lineTotal', () => {
 
   it('空订单总额为 0', () => {
     expect(orderTotal([])).toBe(0);
+  });
+
+  it('采购单总额逐行取整后相加', () => {
+    expect(purchaseTotal([{ qty: 2, unitCost: toMinor(30) }, { qty: 1.5, unitCost: 333 }])).toBe(6000 + 500);
+    expect(purchaseTotal([])).toBe(0);
   });
 });
 

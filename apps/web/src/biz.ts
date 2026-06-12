@@ -1,5 +1,5 @@
-import { accountBalance, allocateCustomerPayments, collectionEntry, convertAmount, creditPurchaseEntry, expandEntry, inventoryState, orderRevenueEntry, orderTotal, supplierPaymentEntry } from '@app/core';
-import type { AccountType, ConvertCtx, Customer, CustomerPayment, Order, OrderPaymentStatus, Supplier } from '@app/core';
+import { accountBalance, allocateCustomerPayments, collectionEntry, convertAmount, creditPurchaseEntry, expandEntry, inventoryState, orderRevenueEntry, orderTotal, purchaseTotal, supplierPaymentEntry } from '@app/core';
+import type { AccountType, ConvertCtx, Customer, CustomerPayment, Order, OrderPaymentStatus, PurchaseLine, Supplier } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredCustomer, StoredOrder, StoredSettlement, StoredTransaction } from '@app/store';
 import { genId } from './db';
 
@@ -234,6 +234,15 @@ export async function completeOrder(repo: Repository, book: StoredBook, order: O
     }
   }
 
+  // 代采品：本单代采成本由「为此单采购」的采购单决定，完成时从代采在途结转 COGS（不过库存池）。
+  // 含代采品但还没采购 → 整单不落（同库存不足，校验在任何写入之前）。
+  const hasDropshipLine = order.lines.some((l) => l.productId != null && prodById.get(l.productId)?.dropship);
+  const purchases = await repo.listPurchases({ bookId: book.id, orderId: order.id });
+  const dropshipCost = purchases.reduce((s, p) => s + purchaseTotal(p.lines), 0);
+  if (hasDropshipLine && dropshipCost <= 0) {
+    throw new Error('本单含代采品，请先在订单上「为此单采购」再完成');
+  }
+
   // ① 确认收入
   const arId = await ensureReceivableAccount(repo, book, customer, order.currency);
   const entry = orderRevenueEntry(
@@ -265,6 +274,17 @@ export async function completeOrder(repo: Repository, book: StoredBook, order: O
         note: '',
       });
     }
+  }
+
+  // ③ 代采成本结转：该单采购成本从「代采在途成本」结转营业成本（借营业成本 / 贷代采在途，CNY 本位）
+  if (dropshipCost > 0) {
+    const wipId = await ensureDropshipAccount(repo, book);
+    const cogsId = await ensureCogsAccount(repo, book);
+    const dsEntry = expandEntry(
+      { kind: 'expense', bookId: book.id, date: order.date, amount: dropshipCost, currency: 'CNY', accountId: wipId, categoryId: cogsId, payee: customer.name, note: '代采成本结转' },
+      genId,
+    );
+    await repo.addTransaction(dsEntry);
   }
 
   await repo.updateOrder(order.id, { status: 'completed', revenueTxnId: entry.id });
@@ -309,6 +329,7 @@ export async function recordCollection(
 // 库存以人民币本位计：库存商品(资产)/营业成本(费用)均为 CNY 科目；按需自动建（同 AR 的 ensure 模式）。
 const INVENTORY = '库存商品';
 const COGS = '营业成本';
+const DROPSHIP_WIP = '代采在途成本';
 
 /** 找/建某顶层科目（按名+类型，CNY 本位容器），返回 id；已归档则恢复。 */
 async function ensureNamedAccount(repo: Repository, book: StoredBook, name: string, type: AccountType): Promise<string> {
@@ -330,6 +351,11 @@ export function ensureInventoryAccount(repo: Repository, book: StoredBook): Prom
 /** 找/建「营业成本」费用科目（CNY，出库结转 COGS 用）。 */
 export function ensureCogsAccount(repo: Repository, book: StoredBook): Promise<string> {
   return ensureNamedAccount(repo, book, COGS, 'expense');
+}
+
+/** 找/建「代采在途成本」资产科目（CNY，代采采购计入、订单完成结转 COGS 的中转）。 */
+export function ensureDropshipAccount(repo: Repository, book: StoredBook): Promise<string> {
+  return ensureNamedAccount(repo, book, DROPSHIP_WIP, 'asset');
 }
 
 /**
@@ -515,4 +541,60 @@ export async function recordSupplierPayment(
     note: opts.note,
     txnId: entry.id,
   });
+}
+
+// —— C2d 代采（为某订单专门采购，成本直挂订单不过库存）——
+
+/**
+ * 为某订单采购代采品：建采购单 + 记账（借代采在途成本 / 贷 付款账户[现结] 或 应付账款/供应商[赊账]）。
+ * 成本计入「代采在途成本」holding 资产，订单完成时由 completeOrder 结转 COGS。CNY 本位。
+ * 采购后把订单从「待采购」转「待发货」。
+ */
+export async function recordOrderPurchase(
+  repo: Repository,
+  book: StoredBook,
+  opts: {
+    order: Order;
+    supplier: Supplier;
+    lines: Array<{ productId: string | null; name: string; qty: number; unitCost: number }>;
+    date: string;
+    payMode: 'cash' | 'credit';
+    payAccountId?: string;
+    note: string;
+  },
+): Promise<void> {
+  const purchaseId = genId();
+  const lines: PurchaseLine[] = opts.lines.map((l) => ({ id: genId(), purchaseId, productId: l.productId, name: l.name, qty: l.qty, unitCost: l.unitCost }));
+  const total = purchaseTotal(lines);
+  if (total <= 0) throw new Error('采购金额为 0');
+  const wipId = await ensureDropshipAccount(repo, book);
+  let txn;
+  if (opts.payMode === 'credit') {
+    const apId = await ensurePayableAccount(repo, book, opts.supplier, 'CNY');
+    txn = creditPurchaseEntry(
+      { bookId: book.id, date: opts.date, amount: total, currency: 'CNY', payableAccountId: apId, inventoryAccountId: wipId, payee: opts.supplier.name, note: opts.note },
+      genId,
+    );
+  } else {
+    if (!opts.payAccountId) throw new Error('现结采购需选付款账户');
+    txn = expandEntry(
+      { kind: 'transfer', bookId: book.id, date: opts.date, amount: total, currency: 'CNY', fromAccountId: opts.payAccountId, toAccountId: wipId, payee: opts.supplier.name, note: opts.note },
+      genId,
+    );
+  }
+  await repo.addTransaction(txn);
+  await repo.addPurchase({
+    id: purchaseId,
+    bookId: book.id,
+    supplierId: opts.supplier.id,
+    orderId: opts.order.id,
+    date: opts.date,
+    payMode: opts.payMode,
+    note: opts.note,
+    txnId: txn.id,
+    lines,
+  });
+  if (opts.order.status === 'pending_purchase') {
+    await repo.updateOrder(opts.order.id, { status: 'pending_ship' });
+  }
 }
