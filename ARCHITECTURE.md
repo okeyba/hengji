@@ -83,8 +83,8 @@
 - **关键纪律：底层分录永远权责发生制（单一真相）**。收付实现制是**报表层呈现**——本月收入(cash) = 当期实收，而非已确认的营业收入余额。**不改 ledger、不改完成订单的分录**，只换报表聚合方式。
 - **实现（恒等式）**：`cash 收入 = accrual 收入 − 本期应收净增(ΔAR)`。ΔAR=赊销−回款；直收 ΔAR=0 两口径同、赊销当期 AR 增抵消不计、回款 AR 减则计、预收 AR 负即时计。落在 `core/reports.ts incomeExpense({basis,receivableAccountIds})`——core 保持纯，应收科目命名约定（`应收账款/*`）活在 web 层 `biz.receivableAccountIds`。Dashboard + OverviewAll 都按各账本口径聚合（避免同账本两处数字打架）。
 - **第一版只影响收入侧（AR）**；支出侧的权责/收付差异要等 C2 应付账款(赊购)才出现，届时对称处理。个人账本收入本就收付实现（借现金/贷收入），两口径一致，差异只在生意账本 AR 流。
-- **作用域**：per-book（`settings.scope = bookId`，key=`accountingBasis`）；默认 accrual（保持现状）。
-- **✅ 通用设置基建已建**——`store` 加 `settings(scope,key,value,updated_at)` KV 表（M6 迁移、三实现、`getSetting/setSetting(upsert)/listSettings`），`scope='app'` 或账本 id。**月度对账(周期/提前提醒天数)、多币种(汇率表/精度/展示币种) 复用此表**，别各做各的。web 侧设置页 = 各账本「设置」tab（`views/Settings.tsx`），助手 `apps/web/src/settings.ts`。
+- **作用域**：**全局**（`settings.scope='app'`，key=`accountingBasis`）；默认 accrual。原为 per-book，2026-06-11 用户反馈「设置太麻烦」后改全局——记账口径只对生意账本有差异、个人/投资两口径本就一致，per-book 灵活性收益薄。
+- **✅ 通用设置基建已建**——`store` 加 `settings(scope,key,value,updated_at)` KV 表（M6 迁移、三实现、`getSetting/setSetting(upsert)/listSettings`），`scope='app'` 或账本 id。**月度对账(周期/提前提醒)、多币种(汇率表) 复用此表**。web 侧设置全部**全局**（`scope='app'`）：侧栏底部「⚙ 设置」入口（`cur='__settings__'` 顶层导航，非账本 tab）→ `views/Settings.tsx`（记账口径/对账提醒/汇率表三卡），助手 `apps/web/src/settings.ts`（`basisOf`/`reconcileDayOf`/`reconcileLeadOf` 均读 `APP_SCOPE`）。
 
 ## 插件 / 可组合账本（north-star，post-1.0）
 

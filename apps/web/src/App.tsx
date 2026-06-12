@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { accountBalance, unclearedCount } from '@app/core';
-import type { BookType, ConvertCtx } from '@app/core';
+import type { AccountingBasis, BookType, ConvertCtx } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredSetting, StoredTransaction } from '@app/store';
 import { BOOK_META, createBookWithChart, isDesktop, ready } from './db';
 import { fmtMoney } from './format';
-import { convertCtxOf, reconcileDayOf, reconcileLeadOf, reconcileTargetDate, reconcileWindowOpen } from './settings';
+import { basisOf, convertCtxOf, reconcileDayOf, reconcileLeadOf, reconcileTargetDate, reconcileWindowOpen } from './settings';
 import OverviewAll from './views/OverviewAll';
 import Dashboard from './views/Dashboard';
 import Transactions from './views/Transactions';
@@ -17,7 +17,10 @@ import Products from './views/Products';
 import Reconcile from './views/Reconcile';
 import Settings from './views/Settings';
 
-type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'reconcile' | 'customers' | 'orders' | 'products' | 'settings';
+type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'reconcile' | 'customers' | 'orders' | 'products';
+/** 顶层导航：财务总表 / 全局设置 / 某账本 id。 */
+const OVERVIEW = 'all';
+const SETTINGS = '__settings__';
 
 export interface AppData {
   repo: Repository;
@@ -27,8 +30,8 @@ export interface AppData {
   accounts: StoredAccount[];
   txns: StoredTransaction[];
   budgets: StoredBudget[];
-  /** 当前账本作用域内的设置（KV） */
-  settings: StoredSetting[];
+  /** 全局记账口径（对所有账本生效） */
+  basis: AccountingBasis;
   /** 多币种折算上下文（展示币种 + 汇率表，app 级全局） */
   convert: ConvertCtx;
   reload: () => Promise<void>;
@@ -41,7 +44,6 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['budgets', '预算'],
     ['accounts', '账户'],
     ['reconcile', '对账'],
-    ['settings', '设置'],
   ],
   business: [
     ['dashboard', '总览'],
@@ -52,14 +54,12 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['budgets', '预算'],
     ['accounts', '账户'],
     ['reconcile', '对账'],
-    ['settings', '设置'],
   ],
   investment: [
     ['invest', '投资'],
     ['txns', '流水'],
     ['accounts', '账户'],
     ['reconcile', '对账'],
-    ['settings', '设置'],
   ],
 };
 
@@ -105,25 +105,24 @@ export default function App() {
       accounts: accounts.filter((a) => a.bookId === cur),
       txns: txns.filter((t) => t.bookId === cur),
       budgets: budgets.filter((b) => b.bookId === cur),
-      settings: settings.filter((s) => s.scope === cur),
     }),
-    [accounts, txns, budgets, settings, cur],
+    [accounts, txns, budgets, cur],
   );
 
-  // 多币种折算上下文（app 级汇率表）；在任何提前 return 之前调用，保证 Hook 顺序稳定。
+  // 全局设置（app 级，对所有账本生效）；在任何提前 return 之前调用，保证 Hook 顺序稳定。
   const convert = useMemo(() => convertCtxOf(settings), [settings]);
+  const basis = useMemo(() => basisOf(settings), [settings]);
 
-  // 对账提醒：已配置对账日 + 进入提前窗口 + 该账本仍有未核销分录（已对账则不扰）。
-  // 须在任何提前 return 之前调用，保证 Hook 顺序稳定。
+  // 对账提醒：全局配置对账日 + 进入提前窗口 + 当前账本仍有未核销分录（已对账则不扰）。
   const reconReminder = useMemo(() => {
     if (!curBook) return null;
-    const day = reconcileDayOf(scoped.settings, curBook.id);
-    if (!day || !reconcileWindowOpen(new Date(), day, reconcileLeadOf(scoped.settings, curBook.id))) return null;
+    const day = reconcileDayOf(settings);
+    if (!day || !reconcileWindowOpen(new Date(), day, reconcileLeadOf(settings))) return null;
     const hasPending = scoped.accounts
       .filter((a) => a.type === 'asset' || a.type === 'liability')
       .some((a) => unclearedCount(scoped.txns, a.id) > 0);
     return hasPending ? reconcileTargetDate(new Date(), day) : null;
-  }, [curBook, scoped.settings, scoped.accounts, scoped.txns]);
+  }, [curBook, settings, scoped.accounts, scoped.txns]);
 
   if (!repo) return <div className="splash">账本加载中…</div>;
 
@@ -153,7 +152,7 @@ export default function App() {
   }
 
   const data: AppData | null = curBook
-    ? { repo, book: curBook, ...scoped, convert, reload: () => loadFrom(repo) }
+    ? { repo, book: curBook, ...scoped, basis, convert, reload: () => loadFrom(repo) }
     : null;
   const tabs = curBook ? TABS[curBook.type] : [];
   const showReminder = reconReminder && curBook && !reconDismissed.has(curBook.id);
@@ -222,6 +221,10 @@ export default function App() {
           </>
         )}
 
+        <button className={`book settings-link${cur === SETTINGS ? ' on' : ''}`} onClick={() => setCur(SETTINGS)}>
+          ⚙ 设置
+        </button>
+
         <div className="s-note">
           {isDesktop
             ? '桌面版：数据已持久化到本地 SQLite。'
@@ -229,7 +232,9 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
-        {cur === 'all' || !data ? (
+        {cur === SETTINGS ? (
+          <Settings repo={repo} settings={settings} convert={convert} reload={() => loadFrom(repo)} />
+        ) : cur === OVERVIEW || !data ? (
           <OverviewAll books={books} accounts={accounts} txns={txns} settings={settings} convert={convert} onOpen={openBook} />
         ) : (
           <>
@@ -270,7 +275,6 @@ export default function App() {
             {view === 'customers' && <Customers data={data} />}
             {view === 'orders' && <Orders data={data} />}
             {view === 'products' && <Products data={data} />}
-            {view === 'settings' && <Settings data={data} />}
           </>
         )}
       </main>

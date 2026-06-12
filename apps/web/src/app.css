@@ -178,6 +178,7 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .t-i { background: #eceafe; color: #4f46e5; }
 .book.add { color: var(--muted); font-size: 12.5px; }
 .book.add:hover { color: var(--brand-700); }
+.book.settings-link { margin-top: 10px; border-top: 1px solid var(--line); border-radius: 0; padding-top: 12px; }
 .biz { color: var(--biz); }
 
 /* 新建账本表单 */

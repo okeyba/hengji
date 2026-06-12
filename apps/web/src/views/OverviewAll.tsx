@@ -33,11 +33,11 @@ export default function OverviewAll({
   const byCur = [...balancesByCurrency(vt, va).entries()].filter(([, v]) => v !== 0);
   const multiCurrency = byCur.length > 1;
 
-  // 各账本按自身记账口径算收支，再求和——与各账本 Dashboard 数字一致（避免同一生意账本两处打架）。
+  // 全局记账口径（对所有账本一致），各账本算收支再求和——与各账本 Dashboard 数字一致。
+  const basis = basisOf(settings);
   const perBook = books.map((b) => {
     const a = accounts.filter((x) => x.bookId === b.id);
     const t = txns.filter((x) => x.bookId === b.id);
-    const basis = basisOf(settings, b.id);
     const arIds = basis === 'cash' ? receivableAccountIds(a) : undefined;
     const ie = incomeExpense(t, a, { period, basis, receivableAccountIds: arIds, convert });
     return { book: b, nw: netWorth(t, a, convert), ie, txCount: t.length };

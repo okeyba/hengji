@@ -7,31 +7,34 @@ import { localISO } from './format';
  * 设置存储是 per-book（scope = 账本 id）或 app 级（scope = 'app'）。
  */
 
-/** 记账口径设置 key（per-book）。 */
+// 全局设置作用域（app 级，所有账本共用）。
+export const APP_SCOPE = 'app';
+
+/** 记账口径设置 key（全局）。 */
 export const BASIS_KEY = 'accountingBasis';
 
 /** 默认口径：权责发生制——保持现状（确认即收入），切换前行为不变。 */
 export const DEFAULT_BASIS: AccountingBasis = 'accrual';
 
-/** 取某账本的记账口径；未设置则回落默认。 */
-export function basisOf(settings: StoredSetting[], bookId: string): AccountingBasis {
-  const row = settings.find((s) => s.scope === bookId && s.key === BASIS_KEY);
+/** 取全局记账口径；未设置则回落默认。 */
+export function basisOf(settings: StoredSetting[]): AccountingBasis {
+  const row = settings.find((s) => s.scope === APP_SCOPE && s.key === BASIS_KEY);
   return row?.value === 'cash' ? 'cash' : DEFAULT_BASIS;
 }
 
-// —— 对账提醒（per-book）——
+// —— 对账提醒（全局）——
 /** 对账日：''=关闭 / 'last'=每月最后一天 / '1'..'28'=每月该日。 */
 export const RECON_DAY_KEY = 'reconcileDay';
 /** 提前提醒天数。 */
 export const RECON_LEAD_KEY = 'reconcileLead';
 export const DEFAULT_RECON_LEAD = 3;
 
-export function reconcileDayOf(settings: StoredSetting[], bookId: string): string {
-  return settings.find((s) => s.scope === bookId && s.key === RECON_DAY_KEY)?.value ?? '';
+export function reconcileDayOf(settings: StoredSetting[]): string {
+  return settings.find((s) => s.scope === APP_SCOPE && s.key === RECON_DAY_KEY)?.value ?? '';
 }
 
-export function reconcileLeadOf(settings: StoredSetting[], bookId: string): number {
-  const v = settings.find((s) => s.scope === bookId && s.key === RECON_LEAD_KEY)?.value;
+export function reconcileLeadOf(settings: StoredSetting[]): number {
+  const v = settings.find((s) => s.scope === APP_SCOPE && s.key === RECON_LEAD_KEY)?.value;
   const n = v ? Number(v) : DEFAULT_RECON_LEAD;
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECON_LEAD;
 }

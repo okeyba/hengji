@@ -2,7 +2,6 @@ import { accountBalance, balancesByCurrency, convertAmount, incomeExpense, netWo
 import type { AppData } from '../App';
 import { currentMonth, fmtMoney } from '../format';
 import { receivableAccountIds, receivableSummary } from '../biz';
-import { basisOf } from '../settings';
 import TxnRow from '../components/TxnRow';
 import QuickEntry from './QuickEntry';
 
@@ -50,11 +49,10 @@ function Donut({ slices, total }: { slices: Array<{ name: string; value: number 
 }
 
 export default function Dashboard({ data }: { data: AppData }) {
-  const { accounts, txns, book, settings, convert } = data;
+  const { accounts, txns, book, basis, convert } = data;
   const month = currentMonth();
   const period = { from: `${month}-01`, to: `${month}-31` };
   const nw = netWorth(txns, accounts, convert);
-  const basis = basisOf(settings, book.id);
   const arIds = basis === 'cash' ? receivableAccountIds(accounts) : undefined;
   const ie = incomeExpense(txns, accounts, { period, basis, receivableAccountIds: arIds, convert });
   // 资产饼图：各资产账户余额折合到展示币种(CNY)再比例分布（多币种下原币不可直接相加）

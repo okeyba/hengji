@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import type { AccountingBasis } from '@app/core';
-import type { AppData } from '../App';
+import type { AccountingBasis, ConvertCtx } from '@app/core';
+import type { Repository, StoredSetting } from '@app/store';
 import { CURRENCIES, CURRENCY_LABEL } from '../format';
 import {
+  APP_SCOPE,
   BASIS_KEY,
   FX_RATES_KEY,
   RECON_DAY_KEY,
@@ -17,47 +18,45 @@ const OPTIONS: Array<{ value: AccountingBasis; label: string; desc: string }> = 
   { value: 'cash', label: '收付实现制', desc: '只把实际到账算收入，赊账等收到钱才计。直观、贴日常现金流。' },
 ];
 
-export default function Settings({ data }: { data: AppData }) {
-  const { repo, book, settings, reload } = data;
-  const basis = basisOf(settings, book.id);
-  const reconDay = reconcileDayOf(settings, book.id);
-  const reconLead = reconcileLeadOf(settings, book.id);
+/** 全局设置：记账口径 / 对账提醒 / 汇率表，全部应用于所有账本。 */
+export default function Settings({
+  repo,
+  settings,
+  convert,
+  reload,
+}: {
+  repo: Repository;
+  settings: StoredSetting[];
+  convert: ConvertCtx;
+  reload: () => Promise<void>;
+}) {
+  const basis = basisOf(settings);
+  const reconDay = reconcileDayOf(settings);
+  const reconLead = reconcileLeadOf(settings);
   const [saving, setSaving] = useState(false);
-
-  async function pick(v: AccountingBasis): Promise<void> {
-    if (v === basis || saving) return;
-    setSaving(true);
-    try {
-      await repo.setSetting(book.id, BASIS_KEY, v);
-      await reload();
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function save(key: string, value: string): Promise<void> {
     if (saving) return;
     setSaving(true);
     try {
-      await repo.setSetting(book.id, key, value);
+      await repo.setSetting(APP_SCOPE, key, value);
       await reload();
     } finally {
       setSaving(false);
     }
   }
 
-  // 汇率表是 app 级（全局共用），写 scope='app'
   async function saveRate(currency: string, raw: string): Promise<void> {
     const n = Number(raw);
     const next: Record<string, number> = {};
     for (const c of CURRENCIES) {
       if (c === 'CNY') continue;
-      const r = c === currency ? n : data.convert.rates[c];
+      const r = c === currency ? n : convert.rates[c];
       if (typeof r === 'number' && Number.isFinite(r) && r > 0) next[c] = r;
     }
     setSaving(true);
     try {
-      await repo.setSetting('app', FX_RATES_KEY, JSON.stringify(next));
+      await repo.setSetting(APP_SCOPE, FX_RATES_KEY, JSON.stringify(next));
       await reload();
     } finally {
       setSaving(false);
@@ -67,20 +66,22 @@ export default function Settings({ data }: { data: AppData }) {
   return (
     <>
       <div className="main-head">
-        <h2>{book.name} · 设置</h2>
+        <h2>设置</h2>
+        <span className="muted">全局 · 应用于所有账本</span>
       </div>
 
       <div className="card">
         <h3>记账口径</h3>
         <p className="muted small">
-          切换「本月收入 / 利润」的计算口径。底层分录始终按权责发生制记账，这里只改报表的呈现方式，不改动任何已记的交易。
+          切换「本月收入 / 利润」的计算口径。底层分录始终按权责发生制记账，这里只改报表呈现，不改动任何已记交易。
+          仅对有赊账的生意账本有差异，个人 / 投资账本两种口径结果一致。
         </p>
         <div className="opt-list">
           {OPTIONS.map((o) => (
             <button
               key={o.value}
               className={`opt-card${basis === o.value ? ' on' : ''}`}
-              onClick={() => void pick(o.value)}
+              onClick={() => void save(BASIS_KEY, o.value)}
               disabled={saving}
             >
               <span className="opt-radio" aria-hidden />
@@ -91,18 +92,11 @@ export default function Settings({ data }: { data: AppData }) {
             </button>
           ))}
         </div>
-        {book.type === 'business' ? (
-          <p className="muted small">两种口径在本账本会得出不同的「本月收入 / 利润」——差异来自赊销与回款的时间差。</p>
-        ) : (
-          <p className="muted small">
-            本账本收入本就是收到即记（无应收账款），两种口径结果一致。此设置主要用于有赊账的生意账本。
-          </p>
-        )}
       </div>
 
       <div className="card">
         <h3>对账提醒</h3>
-        <p className="muted small">设定每月对账日后，临近时在账本顶部提醒去「对账」页核对；已全部核销则不打扰。</p>
+        <p className="muted small">设定每月对账日后，临近时在账本顶部提醒去「对账」页核对；某账本已全部核销则不打扰。</p>
         <div className="rec-setup">
           <label>
             对账日
@@ -132,9 +126,9 @@ export default function Settings({ data }: { data: AppData }) {
       </div>
 
       <div className="card">
-        <h3>汇率表（全局）</h3>
+        <h3>汇率表</h3>
         <p className="muted small">
-          多币种账户在财务总表里按币种分组，并用这里的汇率折合成人民币总值。汇率全局共用、所有账本一致；折合仅用于展示，不改原币余额。
+          多币种账户在财务总表里按币种分组，并用这里的汇率折合成人民币总值。折合仅用于展示，不改原币余额。
         </p>
         <div className="fx-grid">
           {CURRENCIES.filter((c) => c !== 'CNY').map((c) => (
@@ -143,7 +137,7 @@ export default function Settings({ data }: { data: AppData }) {
               <span className="fx-input">
                 <input
                   inputMode="decimal"
-                  defaultValue={String(data.convert.rates[c] ?? '')}
+                  defaultValue={String(convert.rates[c] ?? '')}
                   placeholder="如 7.10"
                   onBlur={(e) => void saveRate(c, e.target.value)}
                   disabled={saving}
