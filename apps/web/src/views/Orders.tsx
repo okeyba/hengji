@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { allocateCustomerPayments, convertAmount, fromMinor, orderTotal, toMinor } from '@app/core';
-import type { CustomerPayment, OrderLine, OrderPaymentStatus, OrderStatus } from '@app/core';
+import { agingBuckets, convertAmount, fromMinor, orderTotal, toMinor } from '@app/core';
+import type { OrderLine, OrderPaymentStatus, OrderStatus } from '@app/core';
 import type { StoredCustomer, StoredInventoryMovement, StoredOrder, StoredProduct, StoredSettlement } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
 import { currencyDef, currencyList, fmtMoney, todayISO } from '../format';
-import { completeOrder, receivableSummary, recordCollection } from '../biz';
+import { completeOrder, customerOrderStatus, receivableSummary, recordCollection } from '../biz';
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending_purchase: { label: '待采购', cls: '' },
@@ -77,51 +77,17 @@ export default function Orders({ data }: { data: AppData }) {
   );
 
   // 按「单据归属」把每笔收款摊到已完成订单（指定单优先，多付/未指定才 FIFO 顺延）
-  // → 每单收款状态 + 应收/预收概览。多币种：按「客户 × 币种」分组分别摊（不同币种应收不混算）。
+  // → 每单收款状态 + 未收清订单（账龄/逾期）+ 应收/预收概览。FIFO/账期编排在 biz.customerOrderStatus。
   const { payStatus, summary, outstanding } = useMemo(() => {
-    const status = new Map<string, { status: OrderPaymentStatus; collected: number; total: number }>();
-    const out: Array<{ order: StoredOrder; owed: number; days: number; overdue: boolean }> = [];
-    const orderById = new Map(orders.map((o) => [o.id, o] as const));
-    // 已完成订单按「客户|币种」分组
-    const byKey = new Map<string, StoredOrder[]>();
-    for (const o of orders) {
-      if (o.status !== 'completed') continue;
-      const k = `${o.customerId}|${o.currency}`;
-      const arr = byKey.get(k) ?? [];
-      arr.push(o);
-      byKey.set(k, arr);
-    }
-    // 收款明细按「客户|币种」（币种取自所属订单；UI 始终带 orderId，null 兜底 CNY）
-    const paysByKey = new Map<string, CustomerPayment[]>();
-    for (const s of settlements) {
-      if (s.direction !== 'in' || s.counterpartyType !== 'customer') continue;
-      const cur = (s.orderId ? orderById.get(s.orderId)?.currency : undefined) ?? 'CNY';
-      const k = `${s.counterpartyId}|${cur}`;
-      const arr = paysByKey.get(k) ?? [];
-      arr.push({ orderId: s.orderId, amount: s.amount });
-      paysByKey.set(k, arr);
-    }
-    const today = todayISO();
-    for (const [key, custOrders] of byKey) {
-      const cid = key.slice(0, key.lastIndexOf('|')); // 客户 id（UUID 不含 '|'）
-      const cust = customers.find((c) => c.id === cid);
-      if (!cust) continue;
-      const ledger = allocateCustomerPayments(
-        custOrders.map((o) => ({ id: o.id, total: orderTotal(o.lines), date: o.date })),
-        paysByKey.get(key) ?? [],
-      );
-      for (const a of ledger.allocations) {
-        status.set(a.orderId, { status: a.status, collected: a.collected, total: a.total });
-        if (a.status !== 'paid') {
-          const ord = custOrders.find((o) => o.id === a.orderId)!;
-          const days = daysBetween(ord.date, today);
-          out.push({ order: ord, owed: a.total - a.collected, days, overdue: cust.dueDays > 0 && days > cust.dueDays });
-        }
-      }
-    }
-    out.sort((x, y) => y.days - x.days);
-    return { payStatus: status, summary: receivableSummary(accounts, txns, convert), outstanding: out };
+    const { payStatus, outstanding } = customerOrderStatus(orders, customers, settlements, todayISO());
+    return { payStatus, outstanding, summary: receivableSummary(accounts, txns, convert) };
   }, [orders, customers, settlements, accounts, txns, convert]);
+
+  // 应收账龄分桶：每笔欠款按账龄归桶，金额折算到展示币种（混合币种可比）。
+  const aging = useMemo(
+    () => agingBuckets(outstanding.map((o) => ({ amount: convertAmount(o.owed, o.order.currency, convert), days: o.days }))),
+    [outstanding, convert],
+  );
 
   // 每单营业成本（人民币）= 该单 out 出库流水的 Σ|数量|×均价。供「每单毛利」用。
   const cogsByOrder = useMemo(() => {
@@ -276,6 +242,21 @@ export default function Orders({ data }: { data: AppData }) {
               {summary.prepaid > 0 && <span className="recv-pre">预收 {fmtMoney(summary.prepaid, convert.display)}</span>}
             </span>
           </div>
+          {outstanding.length > 0 && (
+            <div className="aging" title="按欠款账龄（自下单日起）分桶，金额已折算到展示币种">
+              {[
+                { label: '0–30 天', amt: aging.d0_30, cls: '' },
+                { label: '31–60 天', amt: aging.d31_60, cls: '' },
+                { label: '61–90 天', amt: aging.d61_90, cls: 'warn' },
+                { label: '90 天以上', amt: aging.over90, cls: 'danger' },
+              ].map((c) => (
+                <div className={`aging-cell ${c.cls}`} key={c.label}>
+                  <span className="aging-amt">{fmtMoney(c.amt, convert.display)}</span>
+                  <span className="aging-label">{c.label}</span>
+                </div>
+              ))}
+            </div>
+          )}
           {outstanding.length === 0 ? (
             <p className="muted" style={{ marginTop: 8 }}>所有已完成订单均已收清 🎉</p>
           ) : (
@@ -478,12 +459,6 @@ export default function Orders({ data }: { data: AppData }) {
 function toMinorSafe(price: string, decimals: number): number {
   const n = Number(price);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 10 ** decimals) : 0;
-}
-
-/** 两个 YYYY-MM-DD 间的天数（to − from）。按 UTC 解析，避免夏令时导致差一天。 */
-function daysBetween(from: string, to: string): number {
-  const ms = Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`);
-  return Math.floor(ms / 86400000);
 }
 
 /** 完成订单的收款状态徽章（金额按订单币种）。 */

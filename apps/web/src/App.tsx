@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { accountBalance, unclearedCount } from '@app/core';
+import { accountBalance, convertAmount, unclearedCount } from '@app/core';
 import type { AccountingBasis, BookType, ConvertCtx } from '@app/core';
-import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredSetting, StoredTransaction } from '@app/store';
+import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredCustomer, StoredOrder, StoredSetting, StoredSettlement, StoredTransaction } from '@app/store';
 import { BOOK_META, createBookWithChart, isDesktop, ready } from './db';
-import { fmtMoney, setCurrencyRegistry } from './format';
-import { basisOf, convertCtxOf, currenciesOf, multiCurrencyOn, reconcileDayOf, reconcileLeadOf, reconcileTargetDate, reconcileWindowOpen } from './settings';
+import { fmtMoney, setCurrencyRegistry, todayISO } from './format';
+import { customerOrderStatus } from './biz';
+import { basisOf, convertCtxOf, currenciesOf, dueLeadOf, multiCurrencyOn, reconcileDayOf, reconcileLeadOf, reconcileTargetDate, reconcileWindowOpen } from './settings';
 import OverviewAll from './views/OverviewAll';
 import Dashboard from './views/Dashboard';
 import Transactions from './views/Transactions';
@@ -74,20 +75,27 @@ export default function App() {
   const [txns, setTxns] = useState<StoredTransaction[]>([]);
   const [budgets, setBudgets] = useState<StoredBudget[]>([]);
   const [settings, setSettings] = useState<StoredSetting[]>([]);
+  const [orders, setOrders] = useState<StoredOrder[]>([]);
+  const [customers, setCustomers] = useState<StoredCustomer[]>([]);
+  const [settlements, setSettlements] = useState<StoredSettlement[]>([]);
   const [cur, setCur] = useState<'all' | string>('all');
   const [view, setView] = useState<View>('dashboard');
   const [creating, setCreating] = useState(false);
   const [nbName, setNbName] = useState('');
   const [nbType, setNbType] = useState<BookType>('personal');
   const [reconDismissed, setReconDismissed] = useState<Set<string>>(new Set());
+  const [dueDismissed, setDueDismissed] = useState<Set<string>>(new Set());
 
   async function loadFrom(r: Repository): Promise<void> {
-    const [bk, a, t, b, s] = await Promise.all([
+    const [bk, a, t, b, s, os, cs, st] = await Promise.all([
       r.listBooks(),
       r.listAccounts(),
       r.listTransactions(),
       r.listBudgets(),
       r.listSettings(),
+      r.listOrders(),
+      r.listCustomers({ includeArchived: true }),
+      r.listSettlements(),
     ]);
     setCurrencyRegistry(currenciesOf(s)); // 注入币种注册表，供 fmtMoney 等取符号/小数位
     setBooks(bk);
@@ -95,6 +103,9 @@ export default function App() {
     setTxns(t);
     setBudgets(b);
     setSettings(s);
+    setOrders(os);
+    setCustomers(cs);
+    setSettlements(st);
   }
 
   useEffect(() => {
@@ -133,6 +144,26 @@ export default function App() {
     return hasPending ? reconcileTargetDate(new Date(), day) : null;
   }, [curBook, settings, scoped.accounts, scoped.txns]);
 
+  // 应收到期提醒（仅生意账本）：有未收清订单临近到期（距到期 ≤ 提前天数，含已逾期）即提醒去收款。
+  const dueReminder = useMemo(() => {
+    if (!curBook || curBook.type !== 'business') return null;
+    const lead = dueLeadOf(settings);
+    if (lead === null) return null;
+    const { outstanding } = customerOrderStatus(
+      orders.filter((o) => o.bookId === curBook.id),
+      customers.filter((c) => c.bookId === curBook.id),
+      settlements.filter((s) => s.bookId === curBook.id),
+      todayISO(),
+    );
+    const due = outstanding.filter((o) => o.daysToDue !== null && o.daysToDue <= lead);
+    if (due.length === 0) return null;
+    return {
+      count: due.length,
+      overdueCount: due.filter((o) => o.overdue).length,
+      total: due.reduce((s, o) => s + convertAmount(o.owed, o.order.currency, convert), 0),
+    };
+  }, [curBook, settings, orders, customers, settlements, convert]);
+
   if (!repo) return <div className="splash">账本加载中…</div>;
 
   function openBook(id: 'all' | string, type?: BookType): void {
@@ -165,6 +196,7 @@ export default function App() {
     : null;
   const tabs = curBook ? TABS[curBook.type] : [];
   const showReminder = reconReminder && curBook && !reconDismissed.has(curBook.id);
+  const showDueReminder = dueReminder && curBook && !dueDismissed.has(curBook.id);
 
   return (
     <div className="app">
@@ -263,6 +295,25 @@ export default function App() {
                     className="rb-x"
                     onClick={() => setReconDismissed((s) => new Set(s).add(curBook!.id))}
                   >
+                    稍后
+                  </button>
+                </div>
+              </div>
+            )}
+            {showDueReminder && (
+              <div className="recon-banner due-banner">
+                <span>
+                  💰 有 {dueReminder!.count} 笔应收
+                  {dueReminder!.overdueCount > 0 &&
+                    (dueReminder!.overdueCount === dueReminder!.count ? '已逾期' : `（其中 ${dueReminder!.overdueCount} 笔已逾期）`)}
+                  {dueReminder!.overdueCount === 0 && '即将到期'}
+                  ，合计 {fmtMoney(dueReminder!.total, convert.display)}，建议及时跟进收款。
+                </span>
+                <div className="rb-actions">
+                  <button className="btn btn-primary rb-go" onClick={() => setView('orders')}>
+                    去收款
+                  </button>
+                  <button className="rb-x" onClick={() => setDueDismissed((s) => new Set(s).add(curBook!.id))}>
                     稍后
                   </button>
                 </div>

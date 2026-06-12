@@ -163,3 +163,33 @@ export function allocateCustomerPayments(
     prepaid: Math.max(0, totalPaid - totalOrdered),
   };
 }
+
+/** 应收账龄分桶（金额单位由调用方统一，如已折算到展示币种的最小单位）。 */
+export interface AgingBuckets {
+  /** 0–30 天 */
+  d0_30: number;
+  /** 31–60 天 */
+  d31_60: number;
+  /** 61–90 天 */
+  d61_90: number;
+  /** 90 天以上 */
+  over90: number;
+  /** 合计 */
+  total: number;
+}
+
+/**
+ * 应收账龄分桶：按每笔欠款的账龄（自开票/下单日起的天数）归入 0–30 / 31–60 / 61–90 / 90+ 桶。
+ * 边界归入较小桶：30→0–30、60→31–60、90→61–90、91→90+。金额单位需调用方统一（混合币种应先折算）。
+ */
+export function agingBuckets(items: ReadonlyArray<{ amount: number; days: number }>): AgingBuckets {
+  const b: AgingBuckets = { d0_30: 0, d31_60: 0, d61_90: 0, over90: 0, total: 0 };
+  for (const { amount, days } of items) {
+    if (days <= 30) b.d0_30 += amount;
+    else if (days <= 60) b.d31_60 += amount;
+    else if (days <= 90) b.d61_90 += amount;
+    else b.over90 += amount;
+    b.total += amount;
+  }
+  return b;
+}

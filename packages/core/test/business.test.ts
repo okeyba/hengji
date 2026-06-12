@@ -5,6 +5,7 @@ import {
   orderRevenueEntry,
   collectionEntry,
   allocateCustomerPayments,
+  agingBuckets,
   accountBalance,
   isBalanced,
   toMinor,
@@ -146,5 +147,26 @@ describe('allocateCustomerPayments（按单归属 + FIFO 顺延）', () => {
     expect(r.allocations.find((a) => a.orderId === 'early')).toMatchObject({ collected: 8000, status: 'partial' });
     expect(r.receivable).toBe(2000); // early 还欠 20
     expect(r.prepaid).toBe(0);
+  });
+});
+
+describe('agingBuckets（应收账龄分桶）', () => {
+  it('按账龄归入 0–30 / 31–60 / 61–90 / 90+ 桶（含边界）', () => {
+    const r = agingBuckets([
+      { amount: 100, days: 0 },
+      { amount: 200, days: 30 }, // 边界 → 0–30
+      { amount: 400, days: 31 }, // → 31–60
+      { amount: 800, days: 90 }, // 边界 → 61–90
+      { amount: 1600, days: 91 }, // → 90+
+    ]);
+    expect(r.d0_30).toBe(300);
+    expect(r.d31_60).toBe(400);
+    expect(r.d61_90).toBe(800);
+    expect(r.over90).toBe(1600);
+    expect(r.total).toBe(3100);
+  });
+
+  it('空列表全 0', () => {
+    expect(agingBuckets([])).toEqual({ d0_30: 0, d31_60: 0, d61_90: 0, over90: 0, total: 0 });
   });
 });

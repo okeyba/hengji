@@ -206,6 +206,21 @@ async function bootstrapDemo(): Promise<Repository> {
   await issueStock(usdOrderId, prodA, 20, daysAgo(3)); // 出库 20 个，COGS ¥1650（毛利 $1800 折 ¥12780 − ¥1650 = ¥11130）
   await repo.updateOrder(usdOrderId, { status: 'completed', revenueTxnId: usdRev.id });
 
+  // 一笔已逾期的赊销——展示「应收账龄分桶 + 到期提醒横幅」：建材批发账期 15 天，下单 50 天前仍未收 → 逾期、落 31–60 桶。
+  const odCustId = genId();
+  await repo.addCustomer({ id: odCustId, bookId: biz.book.id, name: '建材批发', phone: '', note: '', dueDays: 15, archived: false });
+  const odArId = genId();
+  await repo.addAccount({ id: odArId, bookId: biz.book.id, name: '应收账款/建材批发', type: 'asset', parentId: biz.byName('应收账款'), currency: 'CNY', archived: false });
+  const odOrderId = genId();
+  const odLines = [{ id: genId(), orderId: odOrderId, name: '钢材一批', qty: 1, unitPrice: toMinor(3200), productId: null }];
+  await repo.addOrder({ id: odOrderId, bookId: biz.book.id, customerId: odCustId, date: daysAgo(50), currency: 'CNY', status: 'pending_ship', note: '欠款未付', revenueTxnId: null, lines: odLines });
+  const odRev = orderRevenueEntry(
+    { bookId: biz.book.id, date: daysAgo(50), amount: orderTotal(odLines), receivableAccountId: odArId, revenueAccountId: biz.byName('营业收入'), payee: '建材批发', note: '欠款未付' },
+    genId,
+  );
+  await repo.addTransaction(odRev);
+  await repo.updateOrder(odOrderId, { status: 'completed', revenueTxnId: odRev.id });
+
   // —— 投资组合（投资）
   const inv = await createBookWithChart(repo, '投资组合', 'investment');
   await opening(inv.book.id, inv.byName, '投资账户', 5000);

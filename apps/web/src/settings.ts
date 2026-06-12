@@ -62,6 +62,20 @@ export function reconcileWindowOpen(today: Date, day: string, lead: number): boo
   return t >= start && t <= end;
 }
 
+// —— 应收到期提醒（全局）——
+/** 提前天数：''/未设=默认提前 7 天；'off'=关闭；数字=提前该天数。 */
+export const DUE_LEAD_KEY = 'dueSoonLead';
+export const DEFAULT_DUE_LEAD = 7;
+
+/** 取应收到期提醒提前天数；返回 null = 关闭（不提醒）。未设置默认提前 7 天（应收逾期天然刚需，默认开）。 */
+export function dueLeadOf(settings: StoredSetting[]): number | null {
+  const v = settings.find((s) => s.scope === APP_SCOPE && s.key === DUE_LEAD_KEY)?.value;
+  if (v === 'off') return null;
+  if (v === undefined || v === '') return DEFAULT_DUE_LEAD;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_DUE_LEAD;
+}
+
 // —— 多币种开关（app 级）——默认关：纯人民币 UI，隐藏币种管理与账户币种选择 ——
 export const MULTICURRENCY_KEY = 'multiCurrency';
 export function multiCurrencyOn(settings: StoredSetting[]): boolean {

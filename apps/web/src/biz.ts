@@ -1,6 +1,6 @@
-import { accountBalance, collectionEntry, convertAmount, expandEntry, inventoryState, orderRevenueEntry, orderTotal } from '@app/core';
-import type { AccountType, ConvertCtx, Customer, Order } from '@app/core';
-import type { Repository, StoredAccount, StoredBook, StoredTransaction } from '@app/store';
+import { accountBalance, allocateCustomerPayments, collectionEntry, convertAmount, expandEntry, inventoryState, orderRevenueEntry, orderTotal } from '@app/core';
+import type { AccountType, ConvertCtx, Customer, CustomerPayment, Order, OrderPaymentStatus } from '@app/core';
+import type { Repository, StoredAccount, StoredBook, StoredCustomer, StoredOrder, StoredSettlement, StoredTransaction } from '@app/store';
 import { genId } from './db';
 
 /**
@@ -58,6 +58,92 @@ export function receivableSummary(
     else if (bal < 0) prepaid += -bal;
   }
   return { receivable, prepaid };
+}
+
+/** 一张已完成订单的收款状态（FIFO 摊单后）。 */
+export interface OrderPayState {
+  status: OrderPaymentStatus;
+  collected: number;
+  total: number;
+}
+
+/** 一张未收清订单的应收明细（账龄 / 逾期 / 距到期天数）。 */
+export interface OutstandingOrder {
+  order: StoredOrder;
+  /** 欠款（订单币种最小单位） */
+  owed: number;
+  /** 账龄：自下单日起的天数 */
+  days: number;
+  /** 已逾期：dueDays>0 且 days>dueDays */
+  overdue: boolean;
+  /** 距到期天数（dueDays>0 时 = dueDays−days，负=逾期 N 天）；dueDays=0（即时/货到付款）不追踪→null */
+  daysToDue: number | null;
+}
+
+/** 两个 YYYY-MM-DD 间的天数（to − from），按 UTC 解析避免夏令时差一天。 */
+function daysBetweenISO(from: string, to: string): number {
+  return Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
+}
+
+/**
+ * 按「客户 × 币种」把收款 FIFO 摊到各已完成订单，得到每单收款状态 + 未收清订单的账龄/逾期。
+ * 应收账龄报表与到期提醒共用——FIFO 与账期编排集中在此，UI 不重复实现。
+ */
+export function customerOrderStatus(
+  orders: StoredOrder[],
+  customers: StoredCustomer[],
+  settlements: StoredSettlement[],
+  today: string,
+): { payStatus: Map<string, OrderPayState>; outstanding: OutstandingOrder[] } {
+  const payStatus = new Map<string, OrderPayState>();
+  const outstanding: OutstandingOrder[] = [];
+  const orderById = new Map(orders.map((o) => [o.id, o] as const));
+
+  // 已完成订单按「客户|币种」分组（不同币种应收不混算）
+  const byKey = new Map<string, StoredOrder[]>();
+  for (const o of orders) {
+    if (o.status !== 'completed') continue;
+    const k = `${o.customerId}|${o.currency}`;
+    const arr = byKey.get(k) ?? [];
+    arr.push(o);
+    byKey.set(k, arr);
+  }
+  // 收款明细按「客户|币种」（币种取自所属订单；UI 始终带 orderId，null 兜底 CNY）
+  const paysByKey = new Map<string, CustomerPayment[]>();
+  for (const s of settlements) {
+    if (s.direction !== 'in' || s.counterpartyType !== 'customer') continue;
+    const cur = (s.orderId ? orderById.get(s.orderId)?.currency : undefined) ?? 'CNY';
+    const k = `${s.counterpartyId}|${cur}`;
+    const arr = paysByKey.get(k) ?? [];
+    arr.push({ orderId: s.orderId, amount: s.amount });
+    paysByKey.set(k, arr);
+  }
+
+  for (const [key, custOrders] of byKey) {
+    const cid = key.slice(0, key.lastIndexOf('|')); // 客户 id（UUID 不含 '|'）
+    const cust = customers.find((c) => c.id === cid);
+    if (!cust) continue;
+    const ledger = allocateCustomerPayments(
+      custOrders.map((o) => ({ id: o.id, total: orderTotal(o.lines), date: o.date })),
+      paysByKey.get(key) ?? [],
+    );
+    for (const a of ledger.allocations) {
+      payStatus.set(a.orderId, { status: a.status, collected: a.collected, total: a.total });
+      if (a.status !== 'paid') {
+        const ord = custOrders.find((o) => o.id === a.orderId)!;
+        const days = daysBetweenISO(ord.date, today);
+        outstanding.push({
+          order: ord,
+          owed: a.total - a.collected,
+          days,
+          overdue: cust.dueDays > 0 && days > cust.dueDays,
+          daysToDue: cust.dueDays > 0 ? cust.dueDays - days : null,
+        });
+      }
+    }
+  }
+  outstanding.sort((x, y) => y.days - x.days);
+  return { payStatus, outstanding };
 }
 
 /** 找/建顶层「应收账款」资产父科目，返回 id。 */

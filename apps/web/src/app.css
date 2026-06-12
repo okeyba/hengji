@@ -310,6 +310,19 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .rb-go { padding: 6px 12px; }
 .rb-x { color: #8a5a14; font-size: 13px; opacity: 0.8; }
 .rb-x:hover { opacity: 1; }
+/* 应收到期提醒：复用横幅布局，红色区分对账（琥珀） */
+.due-banner { background: #fdecec; border-color: #f5c6c6; color: var(--neg); }
+.due-banner .rb-x { color: var(--neg); }
+
+/* 应收账龄分桶 */
+.aging { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 2px; }
+.aging-cell { display: flex; flex-direction: column; gap: 2px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; }
+.aging-amt { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 13px; }
+.aging-label { font-size: 11px; color: var(--muted); }
+.aging-cell.warn { border-color: #f0d9b5; }
+.aging-cell.warn .aging-amt { color: var(--biz); }
+.aging-cell.danger { border-color: #f5c6c6; }
+.aging-cell.danger .aging-amt { color: var(--neg); }
 
 /* 财务总表账本卡片 */
 .bookcards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }

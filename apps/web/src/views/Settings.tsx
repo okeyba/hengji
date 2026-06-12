@@ -8,12 +8,14 @@ import {
   BASIS_KEY,
   CURRENCIES_KEY,
   DISPLAY_CURRENCY_KEY,
+  DUE_LEAD_KEY,
   MULTICURRENCY_KEY,
   RECON_DAY_KEY,
   RECON_LEAD_KEY,
   basisOf,
   currenciesOf,
   displayCurrencyOf,
+  dueLeadOf,
   multiCurrencyOn,
   reconcileDayOf,
   reconcileLeadOf,
@@ -41,6 +43,7 @@ export default function Settings({
   const basis = basisOf(settings);
   const reconDay = reconcileDayOf(settings);
   const reconLead = reconcileLeadOf(settings);
+  const dueLead = dueLeadOf(settings); // null = 关闭
   // 持有外币账户 → 多币种锁定为开（关却仍显示外币=自相矛盾）；归档所有外币账户后才能切回纯人民币。
   const foreignInUse = [...usedCurrencies].filter((c) => c !== 'CNY');
   const hasForeignData = foreignInUse.length > 0;
@@ -170,6 +173,31 @@ export default function Settings({
               </select>
             </label>
           )}
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>应收到期提醒</h3>
+        <p className="muted small">
+          生意账本里有应收款临近到期（按客户账期 = 下单日 + 账期天数）或已逾期时，在账本顶部提醒去跟进收款。无应收 / 全部收清则不打扰。
+        </p>
+        <div className="rec-setup">
+          <label>
+            提前提醒
+            <select
+              value={dueLead === null ? 'off' : String(dueLead)}
+              onChange={(e) => void save(DUE_LEAD_KEY, e.target.value)}
+              disabled={saving}
+            >
+              <option value="off">关闭提醒</option>
+              <option value="0">到期当天</option>
+              {[3, 7, 14, 30].map((n) => (
+                <option key={n} value={String(n)}>
+                  提前 {n} 天
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
       </div>
 
