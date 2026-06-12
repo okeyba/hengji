@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { allocateCustomerPayments, fromMinor, orderTotal, toMinor } from '@app/core';
+import { allocateCustomerPayments, convertAmount, fromMinor, orderTotal, toMinor } from '@app/core';
 import type { CustomerPayment, OrderLine, OrderPaymentStatus, OrderStatus } from '@app/core';
-import type { StoredCustomer, StoredOrder, StoredProduct, StoredSettlement } from '@app/store';
+import type { StoredCustomer, StoredInventoryMovement, StoredOrder, StoredProduct, StoredSettlement } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
 import { currencyDef, currencyList, fmtMoney, todayISO } from '../format';
@@ -31,6 +31,7 @@ export default function Orders({ data }: { data: AppData }) {
   const [orders, setOrders] = useState<StoredOrder[]>([]);
   const [products, setProducts] = useState<StoredProduct[]>([]);
   const [settlements, setSettlements] = useState<StoredSettlement[]>([]);
+  const [movements, setMovements] = useState<StoredInventoryMovement[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   // 新建订单表单
@@ -47,16 +48,18 @@ export default function Orders({ data }: { data: AppData }) {
   const [cAcct, setCAcct] = useState('');
 
   async function refresh(): Promise<void> {
-    const [cs, os, ps, ss] = await Promise.all([
+    const [cs, os, ps, ss, ms] = await Promise.all([
       repo.listCustomers({ bookId: book.id, includeArchived: true }),
       repo.listOrders({ bookId: book.id }),
       repo.listProducts({ bookId: book.id }),
       repo.listSettlements({ bookId: book.id }),
+      repo.listInventoryMovements({ bookId: book.id }),
     ]);
     setCustomers(cs);
     setOrders(os);
     setProducts(ps);
     setSettlements(ss);
+    setMovements(ms);
   }
   useEffect(() => {
     void refresh();
@@ -119,6 +122,19 @@ export default function Orders({ data }: { data: AppData }) {
     out.sort((x, y) => y.days - x.days);
     return { payStatus: status, summary: receivableSummary(accounts, txns, convert), outstanding: out };
   }, [orders, customers, settlements, accounts, txns, convert]);
+
+  // 每单营业成本（人民币）= 该单 out 出库流水的 Σ|数量|×均价。供「每单毛利」用。
+  const cogsByOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mv of movements) {
+      if (mv.kind !== 'out' || !mv.orderId) continue;
+      m.set(mv.orderId, (m.get(mv.orderId) ?? 0) + Math.round(-mv.qty * mv.unitCost));
+    }
+    return m;
+  }, [movements]);
+  // 毛利按人民币本位：订单收入折人民币 − 营业成本（成本恒 CNY）。
+  const cnyCtx = { rates: convert.rates, scales: convert.scales, display: 'CNY' };
+  const marginOf = (o: StoredOrder): number => convertAmount(orderTotal(o.lines), o.currency, cnyCtx) - (cogsByOrder.get(o.id) ?? 0);
 
   function setLine(key: string, patch: Partial<LineDraft>): void {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -384,6 +400,12 @@ export default function Orders({ data }: { data: AppData }) {
                 <span className="bnum">{fmtMoney(orderTotal(o.lines), o.currency)}</span>
               </div>
               <div className="ord-items">{o.lines.map((l) => `${l.name}×${l.qty}`).join('，')}</div>
+              {o.status === 'completed' && (cogsByOrder.get(o.id) ?? 0) > 0 && (
+                <div className="ord-margin">
+                  毛利 <strong className={marginOf(o) >= 0 ? 'pos' : 'neg'}>{fmtMoney(marginOf(o))}</strong>
+                  <span className="muted"> · 成本 {fmtMoney(cogsByOrder.get(o.id)!)}{o.currency !== 'CNY' ? '（收入已折人民币）' : ''}</span>
+                </div>
+              )}
               <div className="arow-btns">
                 {o.status === 'pending_ship' && (
                   <>

@@ -1,4 +1,4 @@
-import { accountBalance, collectionEntry, convertAmount, expandEntry, orderRevenueEntry, orderTotal } from '@app/core';
+import { accountBalance, collectionEntry, convertAmount, expandEntry, inventoryState, orderRevenueEntry, orderTotal } from '@app/core';
 import type { AccountType, ConvertCtx, Customer, Order } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredTransaction } from '@app/store';
 import { genId } from './db';
@@ -113,19 +113,74 @@ export async function renameCustomer(repo: Repository, book: StoredBook, oldName
   }
 }
 
-/** 完成订单 → 确认收入（赊销）：借应收/客户(订单币种)、贷营业收入；回写订单状态与收入分录 id。 */
+/**
+ * 完成订单：① 确认收入（赊销）借应收/客户(订单币种)、贷营业收入；
+ * ② 库存品按出库时点移动加权均价结转营业成本（借营业成本/贷库存商品，人民币本位）+ 记 out 流水。
+ * 先校验库存充足（不足则整单不落），再写收入与成本。
+ */
 export async function completeOrder(repo: Repository, book: StoredBook, order: Order, customer: Customer): Promise<void> {
   const total = orderTotal(order.lines);
   if (total <= 0) throw new Error('订单金额为 0，无法完成');
   const accounts = await repo.listAccounts({ bookId: book.id, includeArchived: true });
   const revenue = accounts.find((a) => a.type === 'income' && a.name === REVENUE);
   if (!revenue) throw new Error('未找到「营业收入」科目，请先在账户页添加');
+
+  // 库存品出库：按商品聚合本单数量（同商品多行合并），校验在手充足，算出库时点均价与 COGS。
+  const products = await repo.listProducts({ bookId: book.id, includeArchived: true });
+  const prodById = new Map(products.map((p) => [p.id, p]));
+  const qtyByProduct = new Map<string, number>();
+  for (const line of order.lines) {
+    const prod = line.productId ? prodById.get(line.productId) : undefined;
+    if (prod?.isStock) qtyByProduct.set(line.productId!, (qtyByProduct.get(line.productId!) ?? 0) + line.qty);
+  }
+  const issues: Array<{ productId: string; qty: number; avgCost: number; cogs: number }> = [];
+  let totalCogs = 0;
+  if (qtyByProduct.size > 0) {
+    const movements = await repo.listInventoryMovements({ bookId: book.id });
+    for (const [productId, qty] of qtyByProduct) {
+      const st = inventoryState(movements.filter((m) => m.productId === productId));
+      if (qty > st.qty) {
+        throw new Error(`库存不足：${prodById.get(productId)!.name} 在手 ${st.qty}，本单需 ${qty}`);
+      }
+      const cogs = Math.round(qty * st.avgCost);
+      issues.push({ productId, qty, avgCost: st.avgCost, cogs });
+      totalCogs += cogs;
+    }
+  }
+
+  // ① 确认收入
   const arId = await ensureReceivableAccount(repo, book, customer, order.currency);
   const entry = orderRevenueEntry(
     { bookId: book.id, date: order.date, amount: total, currency: order.currency, receivableAccountId: arId, revenueAccountId: revenue.id, payee: customer.name, note: order.note },
     genId,
   );
   await repo.addTransaction(entry);
+
+  // ② 结转营业成本（库存品）：借营业成本 / 贷库存商品（CNY 本位），并记 out 出库流水
+  if (totalCogs > 0) {
+    const invId = await ensureInventoryAccount(repo, book);
+    const cogsId = await ensureCogsAccount(repo, book);
+    const cogsEntry = expandEntry(
+      { kind: 'expense', bookId: book.id, date: order.date, amount: totalCogs, currency: 'CNY', accountId: invId, categoryId: cogsId, payee: customer.name, note: '成本结转' },
+      genId,
+    );
+    await repo.addTransaction(cogsEntry);
+    for (const iss of issues) {
+      await repo.addInventoryMovement({
+        id: genId(),
+        bookId: book.id,
+        productId: iss.productId,
+        date: order.date,
+        kind: 'out',
+        qty: -iss.qty,
+        unitCost: iss.avgCost,
+        orderId: order.id,
+        txnId: cogsEntry.id,
+        note: '',
+      });
+    }
+  }
+
   await repo.updateOrder(order.id, { status: 'completed', revenueTxnId: entry.id });
 }
 

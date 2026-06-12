@@ -1,4 +1,4 @@
-import { adjustBalanceEntry, defaultChartFor, expandEntry, orderRevenueEntry, orderTotal, toMinor } from '@app/core';
+import { adjustBalanceEntry, currentAvgCost, defaultChartFor, expandEntry, orderRevenueEntry, orderTotal, toMinor } from '@app/core';
 import type { Account, Book, BookType, EntryInput } from '@app/core';
 import { InMemoryRepository } from '@app/store';
 import type { Repository } from '@app/store';
@@ -159,6 +159,18 @@ async function bootstrapDemo(): Promise<Repository> {
   await stockIn(prodA, 30, 80, daysAgo(15)); // A型工具 30 @ ¥80
   await stockIn(prodA, 10, 90, daysAgo(8)); // 再补 10 @ ¥90 → 移动加权均价 ¥82.5
   await stockIn(prodB, 50, 20, daysAgo(15)); // B型配件 50 @ ¥20
+  // 营业成本科目 + 出库结转助手（订单完成时库存品按出库时点均价结转 COGS + 记 out 流水）
+  const cogsAcctId = genId();
+  await repo.addAccount({ id: cogsAcctId, bookId: biz.book.id, name: '营业成本', type: 'expense', parentId: null, currency: 'CNY', archived: false });
+  const issueStock = async (orderId: string, productId: string, qty: number, date: string): Promise<void> => {
+    const avg = currentAvgCost(await repo.listInventoryMovements({ bookId: biz.book.id, productId }));
+    const e = expandEntry(
+      { kind: 'expense', bookId: biz.book.id, date, amount: Math.round(qty * avg), currency: 'CNY', accountId: invAcctId, categoryId: cogsAcctId, payee: '', note: '成本结转' },
+      genId,
+    );
+    await repo.addTransaction(e);
+    await repo.addInventoryMovement({ id: genId(), bookId: biz.book.id, productId, date, kind: 'out', qty: -qty, unitCost: avg, orderId, txnId: e.id, note: '' });
+  };
   // 一笔已完成但未收款的赊销——让「记账口径」切换在演示版可见：
   // 权责发生制本月收入含这 ¥1250，收付实现制不含（钱还没到账）。
   const custId = genId();
@@ -166,13 +178,14 @@ async function bootstrapDemo(): Promise<Repository> {
   const arSubId = genId();
   await repo.addAccount({ id: arSubId, bookId: biz.book.id, name: '应收账款/老客户', type: 'asset', parentId: biz.byName('应收账款'), currency: 'CNY', archived: false });
   const orderId = genId();
-  const lines = [{ id: genId(), orderId, name: 'A型工具', qty: 10, unitPrice: toMinor(125), productId: null }];
+  const lines = [{ id: genId(), orderId, name: 'A型工具', qty: 10, unitPrice: toMinor(125), productId: prodA }];
   await repo.addOrder({ id: orderId, bookId: biz.book.id, customerId: custId, date: daysAgo(2), currency: 'CNY', status: 'pending_ship', note: '赊销一批', revenueTxnId: null, lines });
   const rev = orderRevenueEntry(
     { bookId: biz.book.id, date: daysAgo(2), amount: orderTotal(lines), receivableAccountId: arSubId, revenueAccountId: biz.byName('营业收入'), payee: '老客户', note: '赊销一批' },
     genId,
   );
   await repo.addTransaction(rev);
+  await issueStock(orderId, prodA, 10, daysAgo(2)); // 出库 10 个 A型工具，结转 COGS（毛利 ¥1250−¥825=¥425）
   await repo.updateOrder(orderId, { status: 'completed', revenueTxnId: rev.id });
 
   // 一张美元订单——展示「业务 AR 多币种」：海外客户赊购 $1,800，应收记 USD 子科目，
@@ -183,13 +196,14 @@ async function bootstrapDemo(): Promise<Repository> {
   const usdArId = genId();
   await repo.addAccount({ id: usdArId, bookId: biz.book.id, name: '应收账款/海外客户 (USD)', type: 'asset', parentId: biz.byName('应收账款'), currency: 'USD', archived: false });
   const usdOrderId = genId();
-  const usdLines = [{ id: genId(), orderId: usdOrderId, name: 'A型工具', qty: 20, unitPrice: toMinor(90), productId: null }];
+  const usdLines = [{ id: genId(), orderId: usdOrderId, name: 'A型工具', qty: 20, unitPrice: toMinor(90), productId: prodA }];
   await repo.addOrder({ id: usdOrderId, bookId: biz.book.id, customerId: usdCustId, date: daysAgo(3), currency: 'USD', status: 'pending_ship', note: '外贸订单', revenueTxnId: null, lines: usdLines });
   const usdRev = orderRevenueEntry(
     { bookId: biz.book.id, date: daysAgo(3), amount: orderTotal(usdLines), currency: 'USD', receivableAccountId: usdArId, revenueAccountId: biz.byName('营业收入'), payee: '海外客户', note: '外贸订单' },
     genId,
   );
   await repo.addTransaction(usdRev);
+  await issueStock(usdOrderId, prodA, 20, daysAgo(3)); // 出库 20 个，COGS ¥1650（毛利 $1800 折 ¥12780 − ¥1650 = ¥11130）
   await repo.updateOrder(usdOrderId, { status: 'completed', revenueTxnId: usdRev.id });
 
   // —— 投资组合（投资）
