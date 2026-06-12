@@ -106,3 +106,55 @@ export function expandEntry(input: EntryInput, genId: () => string): Transaction
     postings,
   };
 }
+
+export interface ForexInput {
+  bookId: string;
+  date: string;
+  /** 汇出账户（原币减少） */
+  fromAccountId: string;
+  /** 汇出金额（正数最小单位，fromCurrency 计） */
+  fromAmount: number;
+  fromCurrency: string;
+  /** 到账账户（原币增加） */
+  toAccountId: string;
+  /** 实际到账金额（正数最小单位，toCurrency 计） */
+  toAmount: number;
+  toCurrency: string;
+  payee?: string;
+  note?: string;
+  tags?: string[];
+}
+
+/**
+ * 换汇 / 跨币转账：只记两条**原币实际数**（汇出额、到账额），不在录入时折算、不自动记汇损。
+ * 汇损隐含在原币余额差里，仅在折算总值时体现（见 ARCHITECTURE「多币种」）。
+ * 两腿币种不同，`assertBalanced` 按币种分组豁免「求和=0」。
+ */
+export function forexEntry(input: ForexInput, genId: () => string): Transaction {
+  assertMinor(input.fromAmount, 'fromAmount');
+  assertMinor(input.toAmount, 'toAmount');
+  if (input.fromAmount <= 0 || input.toAmount <= 0) {
+    throw new Error('汇出 / 到账金额必须为正数（最小单位）');
+  }
+  if (input.fromCurrency === input.toCurrency) {
+    throw new Error('同币种请用普通转账（transfer），换汇要求两腿币种不同');
+  }
+  if (input.fromAccountId === input.toAccountId) {
+    throw new Error('汇出与到账账户不能相同');
+  }
+  const txnId = genId();
+  const postings: Posting[] = [
+    { id: genId(), txnId, accountId: input.toAccountId, amount: input.toAmount, currency: input.toCurrency },
+    { id: genId(), txnId, accountId: input.fromAccountId, amount: -input.fromAmount, currency: input.fromCurrency },
+  ];
+  assertBalanced(postings); // 多币种 → 豁免；仅守住「非空」等基本前提
+  return {
+    id: txnId,
+    bookId: input.bookId,
+    date: input.date,
+    payee: input.payee ?? '',
+    note: input.note ?? '换汇',
+    tags: input.tags ?? [],
+    postings,
+  };
+}

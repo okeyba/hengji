@@ -104,10 +104,13 @@ export function describeTxn(t: StoredTransaction, accounts: Map<string, StoredAc
     const from = real.find((x) => x.p.amount < 0);
     const to = real.find((x) => x.p.amount > 0);
     if (from && to) {
+      const forex = from.p.currency !== to.p.currency;
       return {
-        emoji: '🔁',
-        title: `转账 → ${to.acc!.name}`,
-        sub: `${from.acc!.name} → ${to.acc!.name} · ${t.date}`,
+        emoji: forex ? '💱' : '🔁',
+        title: `${forex ? '换汇' : '转账'} → ${to.acc!.name}`,
+        sub: forex
+          ? `${from.acc!.name} ${fmtMoney(from.p.amount, from.p.currency)} → ${to.acc!.name} · ${t.date}`
+          : `${from.acc!.name} → ${to.acc!.name} · ${t.date}`,
         amountText: fmtMoney(to.p.amount, to.p.currency),
         tone: 'neutral',
         tags: t.tags,

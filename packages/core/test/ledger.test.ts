@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expandEntry, isBalanced, assertBalanced, balanceOf, toMinor } from '../src/index';
+import { expandEntry, forexEntry, isBalanced, assertBalanced, balanceOf, toMinor } from '../src/index';
 
 function counter(): () => string {
   let n = 0;
@@ -116,5 +116,34 @@ describe('balance helpers', () => {
     ];
     expect(isBalanced(bad)).toBe(false);
     expect(() => assertBalanced(bad)).toThrow();
+  });
+});
+
+describe('forexEntry（换汇 / 跨币转账）', () => {
+  const base = {
+    bookId: 'b1',
+    date: '2026-06-11',
+    fromAccountId: 'usd',
+    fromAmount: toMinor(1000),
+    fromCurrency: 'USD',
+    toAccountId: 'cny',
+    toAmount: toMinor(6800),
+    toCurrency: 'CNY',
+  };
+
+  it('两条原币腿：汇出 −$1000 / 到账 +¥6800，多币种豁免平衡', () => {
+    const t = forexEntry(base, counter());
+    expect(t.postings).toHaveLength(2);
+    expect(t.postings.find((p) => p.accountId === 'usd')).toMatchObject({ amount: -100000, currency: 'USD' });
+    expect(t.postings.find((p) => p.accountId === 'cny')).toMatchObject({ amount: 680000, currency: 'CNY' });
+    expect(isBalanced(t.postings)).toBe(true); // 多币种豁免
+    expect(t.postings.every((p) => p.txnId === t.id)).toBe(true);
+  });
+
+  it('拒绝同币种（应走普通转账）/ 同账户 / 非正金额', () => {
+    expect(() => forexEntry({ ...base, toCurrency: 'USD' }, counter())).toThrow(/同币种/);
+    expect(() => forexEntry({ ...base, toAccountId: 'usd' }, counter())).toThrow(/不能相同/);
+    expect(() => forexEntry({ ...base, fromAmount: 0 }, counter())).toThrow();
+    expect(() => forexEntry({ ...base, toAmount: -1 }, counter())).toThrow();
   });
 });
