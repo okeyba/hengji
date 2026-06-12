@@ -1,13 +1,13 @@
 import { accountBalance, balancesByCurrency, convertAmount, incomeExpense, netWorth, unclearedCount } from '@app/core';
 import type { AppData } from '../App';
-import { currentMonth, fmtMoney } from '../format';
+import { currencyDef, currentMonth, fmtMoney } from '../format';
 import { receivableAccountIds, receivableSummary } from '../biz';
 import TxnRow from '../components/TxnRow';
 import QuickEntry from './QuickEntry';
 
 const PALETTE = ['#0e9f6e', '#4f46e5', '#d97706', '#0ea5e9', '#8b5cf6', '#14b8a6', '#e5484d'];
 
-function Donut({ slices, total }: { slices: Array<{ name: string; value: number }>; total: number }) {
+function Donut({ slices, total, display }: { slices: Array<{ name: string; value: number }>; total: number; display: string }) {
   if (total <= 0) return <p className="muted">暂无资产数据</p>;
   let acc = 0;
   return (
@@ -40,7 +40,7 @@ function Donut({ slices, total }: { slices: Array<{ name: string; value: number 
           <div key={s.name}>
             <i style={{ background: PALETTE[i % PALETTE.length] }} />
             {s.name}
-            <span className="lv">{fmtMoney(s.value)}</span>
+            <span className="lv">{fmtMoney(s.value, display)}</span>
           </div>
         ))}
       </div>
@@ -63,9 +63,11 @@ export default function Dashboard({ data }: { data: AppData }) {
   const totalAssets = slices.reduce((s, x) => s + x.value, 0);
   const netLabel = book.type === 'business' ? '本月利润' : '本月结余';
   const recv = book.type === 'business' ? receivableSummary(accounts, txns) : null;
-  // 多币种：账户跨币种时，净资产标头标注「折合」+ 各币种小计
+  // 多币种：账户跨币种时，净资产标头标注「折合<展示币种>」+ 各币种小计
+  const display = convert.display;
   const byCur = [...balancesByCurrency(txns, accounts).entries()].filter(([, v]) => v !== 0);
-  const multiCurrency = byCur.length > 1;
+  const converted = byCur.some(([c]) => c !== display); // 持有非展示币种 → 标头需标注折合
+  const multiCurrency = byCur.length > 1; // 多于一种币种 → 列各币种原币小计
 
   // 滚动对账状态：仅对「已开始对账」的账本显示（有任一已核销分录），免扰不对账的用户。
   const hasReconciled = txns.some((t) => t.postings.some((p) => p.cleared));
@@ -89,8 +91,8 @@ export default function Dashboard({ data }: { data: AppData }) {
       </div>
       <div className="stats">
         <div className="stat hero-stat">
-          <div className="k">净资产{multiCurrency ? '（折合人民币）' : ''}</div>
-          <div className="v">{fmtMoney(nw)}</div>
+          <div className="k">净资产{converted ? `（折合${currencyDef(display).name}）` : ''}</div>
+          <div className="v">{fmtMoney(nw, display)}</div>
           {multiCurrency && (
             <div className="cur-breakdown">
               {byCur.map(([cur, amt]) => (
@@ -103,23 +105,23 @@ export default function Dashboard({ data }: { data: AppData }) {
         </div>
         <div className="stat">
           <div className="k">本月收入</div>
-          <div className="v sm pos">{fmtMoney(ie.income)}</div>
+          <div className="v sm pos">{fmtMoney(ie.income, display)}</div>
         </div>
         <div className="stat">
           <div className="k">本月支出</div>
-          <div className="v sm neg">{fmtMoney(ie.expense)}</div>
+          <div className="v sm neg">{fmtMoney(ie.expense, display)}</div>
         </div>
         <div className="stat">
           <div className="k">{netLabel}</div>
-          <div className={`v sm${book.type === 'business' ? ' biz' : ''}`}>{fmtMoney(ie.net)}</div>
+          <div className={`v sm${book.type === 'business' ? ' biz' : ''}`}>{fmtMoney(ie.net, display)}</div>
         </div>
       </div>
       <div className="mid">
         <div className="card">
           <h3>
-            资产分布 <span className="mini">合计 {fmtMoney(totalAssets)}</span>
+            资产分布 <span className="mini">合计 {fmtMoney(totalAssets, display)}</span>
           </h3>
-          <Donut slices={slices} total={totalAssets} />
+          <Donut slices={slices} total={totalAssets} display={display} />
           {recv && (recv.receivable > 0 || recv.prepaid > 0) && (
             <div className="recv-line">
               客户往来：

@@ -6,11 +6,13 @@ import {
   APP_SCOPE,
   BASIS_KEY,
   CURRENCIES_KEY,
+  DISPLAY_CURRENCY_KEY,
   MULTICURRENCY_KEY,
   RECON_DAY_KEY,
   RECON_LEAD_KEY,
   basisOf,
   currenciesOf,
+  displayCurrencyOf,
   multiCurrencyOn,
   reconcileDayOf,
   reconcileLeadOf,
@@ -39,7 +41,9 @@ export default function Settings({
   const reconDay = reconcileDayOf(settings);
   const reconLead = reconcileLeadOf(settings);
   const mc = multiCurrencyOn(settings);
-  const custom = currenciesOf(settings).filter((c) => c.code !== 'CNY');
+  const allCurrencies = currenciesOf(settings); // CNY 在首 + 自定义
+  const custom = allCurrencies.filter((c) => c.code !== 'CNY');
+  const displayCur = displayCurrencyOf(settings);
   const [saving, setSaving] = useState(false);
   const [nc, setNc] = useState(emptyNew);
   const [err, setErr] = useState<string | null>(null);
@@ -175,8 +179,22 @@ export default function Settings({
 
         {mc && (
           <>
+            <div className="rec-setup">
+              <label>
+                展示币种
+                <select value={displayCur} onChange={(e) => void save(DISPLAY_CURRENCY_KEY, e.target.value)} disabled={saving}>
+                  {allCurrencies.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.name} {c.code}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <p className="muted small">财务总表与各账本的净资产、收支按所选币种折算显示（各账户余额、流水仍按原币）。</p>
+
             <p className="muted small">
-              自定义币种（代码 / 符号 / 名称 / 小数位 / 对人民币汇率）。多币种账户在财务总表按币种分组、用汇率折合人民币展示。
+              自定义币种（代码 / 符号 / 名称 / 小数位 / 对人民币汇率）。多币种账户在财务总表按币种分组、用汇率折合展示币种。
               人民币是本位币、固定不可改。
             </p>
             <div className="cur-table">

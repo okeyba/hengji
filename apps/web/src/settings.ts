@@ -71,8 +71,17 @@ export function multiCurrencyOn(settings: StoredSetting[]): boolean {
 // —— 多币种币种注册表（app 级，全局共用，用户自管）——
 /** 自定义币种存 app 级 JSON 数组（不含 CNY）：[{code,symbol,name,decimals,rate}, …]。 */
 export const CURRENCIES_KEY = 'currencies';
-/** 展示币种固定 CNY（切换留后续）。 */
-export const DISPLAY_CURRENCY = 'CNY';
+
+// —— 展示币种（app 级）——财务总表/净资产折算成该币种显示，默认人民币 ——
+export const DISPLAY_CURRENCY_KEY = 'displayCurrency';
+export const DEFAULT_DISPLAY_CURRENCY = 'CNY';
+
+/** 取展示币种；未设置、指向 CNY、或指向已删除的币种都回落 CNY。 */
+export function displayCurrencyOf(settings: StoredSetting[]): string {
+  const v = settings.find((s) => s.scope === APP_SCOPE && s.key === DISPLAY_CURRENCY_KEY)?.value;
+  if (!v || v === 'CNY') return DEFAULT_DISPLAY_CURRENCY;
+  return currenciesOf(settings).some((c) => c.code === v) ? v : DEFAULT_DISPLAY_CURRENCY;
+}
 
 /** 读币种列表（CNY 在首 + 用户自定义）；逐项校验，坏数据丢弃。 */
 export function currenciesOf(settings: StoredSetting[]): CurrencyDef[] {
@@ -112,5 +121,7 @@ export function convertCtxOf(settings: StoredSetting[]): ConvertCtx {
     rates[d.code] = d.rate;
     scales[d.code] = d.decimals;
   }
-  return { rates, scales, display: DISPLAY_CURRENCY };
+  // 多币种关闭时强制人民币展示（「关只藏控件不强转」），开启时按用户所选展示币种折算。
+  const display = multiCurrencyOn(settings) ? displayCurrencyOf(settings) : DEFAULT_DISPLAY_CURRENCY;
+  return { rates, scales, display };
 }

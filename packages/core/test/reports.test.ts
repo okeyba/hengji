@@ -120,6 +120,17 @@ describe('reports', () => {
       expect(convertAmount(100000, 'JPY', ctx)).toBe(100000); // 缺汇率按 1 兜底
     });
 
+    it('convertAmount：展示币种非 CNY（除以展示币 rate）', () => {
+      const usd: ConvertCtx = {
+        rates: { USD: 7.1, BTC: 400000, CNY: 1 },
+        scales: { USD: 2, BTC: 8, CNY: 2 },
+        display: 'USD',
+      };
+      expect(convertAmount(710000, 'CNY', usd)).toBe(100000); // ¥7100 → $1000（÷7.1）
+      expect(convertAmount(200000, 'USD', usd)).toBe(200000); // 展示币自身不折
+      expect(convertAmount(5_000_000, 'BTC', usd)).toBe(281_690); // 0.05 BTC ×(400000/7.1)×10^(2−8)
+    });
+
     it('convertAmount：跨小数位（BTC 8 位 / JPY 0 位 → CNY 2 位）', () => {
       const ctx2: ConvertCtx = {
         rates: { BTC: 400000, JPY: 0.05, CNY: 1 },

@@ -4,7 +4,7 @@ import type { StoredAccount, StoredBook, StoredSetting, StoredTransaction } from
 import { BOOK_META } from '../db';
 import { receivableAccountIds } from '../biz';
 import { basisOf } from '../settings';
-import { currentMonth, fmtMoney } from '../format';
+import { currencyDef, currentMonth, fmtMoney } from '../format';
 
 export default function OverviewAll({
   books,
@@ -28,10 +28,12 @@ export default function OverviewAll({
   const visible = new Set(books.map((b) => b.id));
   const va = accounts.filter((x) => visible.has(x.bookId));
   const vt = txns.filter((x) => visible.has(x.bookId));
-  const totalNw = netWorth(vt, va, convert); // 折合到展示币种(CNY)
+  const display = convert.display;
+  const totalNw = netWorth(vt, va, convert); // 折合到展示币种
   // 净资产按币种分组（原币精确）——多于一种币种时展示分组小计
   const byCur = [...balancesByCurrency(vt, va).entries()].filter(([, v]) => v !== 0);
-  const multiCurrency = byCur.length > 1;
+  const converted = byCur.some(([c]) => c !== display); // 持有非展示币种 → 标头标注折合
+  const multiCurrency = byCur.length > 1; // 多于一种币种 → 列各币种原币小计
 
   // 全局记账口径（对所有账本一致），各账本算收支再求和——与各账本 Dashboard 数字一致。
   const basis = basisOf(settings);
@@ -55,8 +57,8 @@ export default function OverviewAll({
       </div>
       <div className="stats">
         <div className="stat hero-stat">
-          <div className="k">全部净资产{multiCurrency ? '（折合人民币）' : ''}（{books.length} 个账本汇总）</div>
-          <div className="v">{fmtMoney(totalNw)}</div>
+          <div className="k">全部净资产{converted ? `（折合${currencyDef(display).name}）` : ''}（{books.length} 个账本汇总）</div>
+          <div className="v">{fmtMoney(totalNw, display)}</div>
           {multiCurrency && (
             <div className="cur-breakdown">
               {byCur.map(([cur, amt]) => (
@@ -69,15 +71,15 @@ export default function OverviewAll({
         </div>
         <div className="stat">
           <div className="k">本月总收入</div>
-          <div className="v sm pos">{fmtMoney(totalIe.income)}</div>
+          <div className="v sm pos">{fmtMoney(totalIe.income, display)}</div>
         </div>
         <div className="stat">
           <div className="k">本月总支出</div>
-          <div className="v sm neg">{fmtMoney(totalIe.expense)}</div>
+          <div className="v sm neg">{fmtMoney(totalIe.expense, display)}</div>
         </div>
         <div className="stat">
           <div className="k">本月总结余</div>
-          <div className="v sm">{fmtMoney(totalIe.net)}</div>
+          <div className="v sm">{fmtMoney(totalIe.net, display)}</div>
         </div>
       </div>
       <div className="bookcards">
@@ -87,10 +89,10 @@ export default function OverviewAll({
               {BOOK_META[book.type].emoji} {book.name}
               <span className={`bk-type ${BOOK_META[book.type].cls}`}>{BOOK_META[book.type].label}</span>
             </div>
-            <div className="bc-nw">{fmtMoney(nw)}</div>
+            <div className="bc-nw">{fmtMoney(nw, display)}</div>
             <div className="bc-sub">
               本月{book.type === 'business' ? '利润' : '结余'} {ie.net >= 0 ? '+' : ''}
-              {fmtMoney(ie.net)} · {txCount} 笔
+              {fmtMoney(ie.net, display)} · {txCount} 笔
             </div>
           </button>
         ))}
