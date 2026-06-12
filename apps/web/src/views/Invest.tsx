@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { accountBalance, adjustBalanceEntry, fromMinor, toMinor } from '@app/core';
+import { accountBalance, adjustBalanceEntry, toMinor } from '@app/core';
 import type { AppData } from '../App';
 import { genId } from '../db';
-import { fmtMoney, todayISO } from '../format';
+import { currencyDef, fmtMoney, todayISO } from '../format';
 
 export default function Invest({ data }: { data: AppData }) {
   const { accounts, txns, repo, reload, book } = data;
@@ -18,6 +18,7 @@ export default function Invest({ data }: { data: AppData }) {
 
   const balance = accountBalance(txns, eff.id);
   const cumPnl = -accountBalance(txns, pnl.id); // 收入科目余额为负 → 翻正即累计盈亏
+  const dec = currencyDef(eff.currency).decimals; // 现值更新/显示按账户币种精度
 
   async function save(): Promise<void> {
     setErr(null);
@@ -35,8 +36,9 @@ export default function Invest({ data }: { data: AppData }) {
             date: todayISO(),
             accountId: eff!.id,
             currentBalance: balance,
-            targetValue: toMinor(major),
+            targetValue: toMinor(major, dec),
             counterAccountId: pnl!.id,
+            currency: eff!.currency, // 两腿按账户币种，避免在非人民币账户上混入人民币分录
             note: '更新投资现值',
           },
           genId,
@@ -58,7 +60,7 @@ export default function Invest({ data }: { data: AppData }) {
       <div className="stats">
         <div className="stat hero-stat">
           <div className="k">当前现值（{eff.name}）</div>
-          <div className="v">{fmtMoney(balance)}</div>
+          <div className="v">{fmtMoney(balance, eff.currency)}</div>
         </div>
         <div className="stat">
           <div className="k">累计投资盈亏</div>
@@ -83,12 +85,12 @@ export default function Invest({ data }: { data: AppData }) {
             </select>
           </label>
           <label>
-            最新现值（元）
+            最新现值（{currencyDef(eff.currency).symbol}）
             <input
               inputMode="decimal"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder={String(fromMinor(balance))}
+              placeholder={String(balance / 10 ** dec)}
             />
           </label>
         </div>

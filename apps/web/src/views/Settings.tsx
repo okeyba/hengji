@@ -98,6 +98,7 @@ export default function Settings({
   }
 
   const num = (s: string, fallback: number): number => {
+    if (s.trim() === '') return fallback; // 清空输入按原值，避免误存 0
     const n = Number(s);
     return Number.isFinite(n) ? n : fallback;
   };
