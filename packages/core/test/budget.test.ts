@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { expandEntry, budgetUsage } from '../src/index';
-import type { Budget } from '../src/index';
+import type { Budget, ConvertCtx } from '../src/index';
 
 const B = 'b1';
 
@@ -37,6 +37,21 @@ describe('budgetUsage', () => {
       remaining: 80000,
       over: false,
     });
+  });
+
+  it('多币种：外币支出按汇率折入预算本位（convert）', () => {
+    const gen = counter();
+    const txns = [
+      expandEntry({ kind: 'expense', bookId: B, date: '2026-06-03', amount: 30000, accountId: 'bank', categoryId: 'food' }, gen),
+      // 从美元账户花 $100（posting 币种 USD）
+      expandEntry({ kind: 'expense', bookId: B, date: '2026-06-05', amount: 10000, currency: 'USD', accountId: 'usd', categoryId: 'food' }, gen),
+    ];
+    const budgets: Budget[] = [{ id: 'b1', bookId: B, accountId: 'food', monthlyLimit: 120000 }];
+    const ctx: ConvertCtx = { rates: { USD: 7.1, CNY: 1 }, scales: { USD: 2, CNY: 2 }, display: 'CNY' };
+    // ¥300 + $100×7.1=¥710 = ¥1010（minor 101000）
+    expect(budgetUsage(txns, budgets, '2026-06', ctx)[0]!.spent).toBe(101000);
+    // 不传 convert 则原样相加（USD minor 当 CNY minor）：30000 + 10000 = 40000
+    expect(budgetUsage(txns, budgets, '2026-06')[0]!.spent).toBe(40000);
   });
 
   it('无消费的预算 spent=0', () => {

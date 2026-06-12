@@ -5,9 +5,10 @@ import { genId } from '../db';
 import { currentMonth, fmtMoney } from '../format';
 
 export default function Budgets({ data }: { data: AppData }) {
-  const { accounts, txns, budgets, repo, reload, book } = data;
+  const { accounts, txns, budgets, repo, reload, book, convert, mcEnabled } = data;
   const month = currentMonth();
-  const lines = budgetUsage(txns, budgets, month);
+  // 预算按人民币本位计；外币支出按当前汇率折入（展示币种是否 CNY 不影响预算口径）。
+  const lines = budgetUsage(txns, budgets, month, { rates: convert.rates, scales: convert.scales, display: 'CNY' });
   const nameOf = (id: string): string => accounts.find((a) => a.id === id)?.name ?? id;
   const candidates = accounts.filter((a) => a.type === 'expense' && !budgets.some((b) => b.accountId === a.id));
   const [accId, setAccId] = useState('');
@@ -38,6 +39,7 @@ export default function Budgets({ data }: { data: AppData }) {
         <span className="muted">{month}</span>
       </div>
       <div className="card">
+        {mcEnabled && <p className="muted small">预算按人民币（¥）计；外币支出按当前汇率折算计入。</p>}
         {lines.length === 0 && <p className="muted">还没有预算，先在下面加一个。</p>}
         {lines.map((l) => {
           const pct = l.limit > 0 ? Math.min(100, Math.round((l.spent / l.limit) * 100)) : 0;

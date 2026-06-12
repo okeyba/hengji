@@ -1,4 +1,6 @@
 import type { Budget, Transaction } from './types';
+import { convertAmount } from './reports';
+import type { ConvertCtx } from './reports';
 
 export interface BudgetLine {
   accountId: string;
@@ -12,15 +14,18 @@ export interface BudgetLine {
 /**
  * 某月各预算的使用情况。month 形如 'YYYY-MM'（精确 7 字符）。
  * spent = 该月内、该科目所有 posting 之和（费用科目下即当月支出）。
+ * 多币种：传 convert 则把各 posting 按其币种折算到 convert.display 再累加（预算按该币种本位计，
+ * 外币支出按汇率折入）；不传则原样相加（单币种／向后兼容）。
  */
-export function budgetUsage(txns: Transaction[], budgets: Budget[], month: string): BudgetLine[] {
+export function budgetUsage(txns: Transaction[], budgets: Budget[], month: string, convert?: ConvertCtx): BudgetLine[] {
   const spentByAccount = new Map<string, number>();
   for (const t of txns) {
     // 取 date 的 YYYY-MM 段精确比较，而非 startsWith 前缀匹配
     // （否则 '2026-1' 会错配 2026-10/11/12，'2026' 会匹配全年）
     if (t.date.slice(0, 7) !== month) continue;
     for (const p of t.postings) {
-      spentByAccount.set(p.accountId, (spentByAccount.get(p.accountId) ?? 0) + p.amount);
+      const amt = convert ? convertAmount(p.amount, p.currency, convert) : p.amount;
+      spentByAccount.set(p.accountId, (spentByAccount.get(p.accountId) ?? 0) + amt);
     }
   }
   return budgets.map((b) => {
