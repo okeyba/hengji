@@ -12,8 +12,10 @@ type AddKind = 'income' | 'expense';
 export default function Reconcile({ data }: { data: AppData }) {
   const { repo, book, accounts, txns, reload } = data;
 
+  // 暂排除全局共享账户：其流水散落多账本，需按账户跨账本对账（账户全局化 Phase 4 的全局对账入口），
+  // 当前账本内对账只见本账本流水、会漏算 → 先不在此列出，避免误对。
   const recAccounts = useMemo(
-    () => accounts.filter((a) => (a.type === 'asset' || a.type === 'liability') && !a.archived),
+    () => accounts.filter((a) => (a.type === 'asset' || a.type === 'liability') && !a.archived && !a.global),
     [accounts],
   );
 
