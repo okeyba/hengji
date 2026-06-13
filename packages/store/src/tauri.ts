@@ -1,12 +1,13 @@
 import Database from '@tauri-apps/plugin-sql';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
   BudgetPatch,
   Clock,
   CustomerPatch,
+  FeeDefinitionPatch,
   OrderPatch,
   ProductPatch,
   PurchasePatch,
@@ -15,6 +16,7 @@ import type {
   StoredBook,
   StoredBudget,
   StoredCustomer,
+  StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
@@ -34,6 +36,7 @@ import {
   toBook,
   toBudget,
   toCustomer,
+  toFeeDefinition,
   toInventoryMovement,
   toOrder,
   toOrderLine,
@@ -52,6 +55,7 @@ import type {
   BookRow,
   BudgetRow,
   CustomerRow,
+  FeeDefinitionRow,
   InventoryMovementRow,
   OrderLineRow,
   OrderRow,
@@ -504,8 +508,8 @@ export class TauriSqlRepository implements Repository {
   private async insertOrderLines(orderId: string, lines: Order['lines']): Promise<void> {
     for (const l of lines) {
       await this.db.execute(
-        'INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id) VALUES ($1, $2, $3, $4, $5, $6)',
-        [l.id, orderId, l.name, l.qty, l.unitPrice, l.productId],
+        'INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id, fee_ids) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [l.id, orderId, l.name, l.qty, l.unitPrice, l.productId, JSON.stringify(l.feeIds ?? [])],
       );
     }
   }
@@ -704,6 +708,46 @@ export class TauriSqlRepository implements Repository {
       [next.name, next.costPrice, next.salePrice, next.quoteOnly ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id],
     );
     return (await this.getProduct(id))!;
+  }
+
+  // ---- 生意：额外费用定义（C2 Step 4）----
+  async addFeeDefinition(fee: FeeDefinition): Promise<StoredFeeDefinition> {
+    if (await this.exists('SELECT 1 FROM fee_definitions WHERE id = $1', [fee.id])) throw new Error(`费用定义已存在：${fee.id}`);
+    await this.assertBook(fee.bookId);
+    const ts = this.now();
+    await this.db.execute(
+      'INSERT INTO fee_definitions (id, book_id, name, calc_type, tiers, archived, created_at, updated_at, deleted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)',
+      [fee.id, fee.bookId, fee.name, fee.calcType, JSON.stringify(fee.tiers), fee.archived ? 1 : 0, ts, ts],
+    );
+    return (await this.getFeeDefinition(fee.id))!;
+  }
+
+  private async getFeeDefinition(id: string): Promise<StoredFeeDefinition | null> {
+    const rows = await this.db.select<FeeDefinitionRow[]>('SELECT * FROM fee_definitions WHERE id = $1 AND deleted = 0', [id]);
+    return rows[0] ? toFeeDefinition(rows[0]) : null;
+  }
+
+  async listFeeDefinitions(opts: { bookId?: string; includeArchived?: boolean } = {}): Promise<StoredFeeDefinition[]> {
+    const cond = ['deleted = 0'];
+    const params: unknown[] = [];
+    if (!opts.includeArchived) cond.push('archived = 0');
+    if (opts.bookId) {
+      params.push(opts.bookId);
+      cond.push(`book_id = $${params.length}`);
+    }
+    const rows = await this.db.select<FeeDefinitionRow[]>(`SELECT * FROM fee_definitions WHERE ${cond.join(' AND ')}`, params);
+    return rows.map(toFeeDefinition);
+  }
+
+  async updateFeeDefinition(id: string, patch: FeeDefinitionPatch): Promise<StoredFeeDefinition> {
+    const cur = await this.getFeeDefinition(id);
+    if (!cur) throw new Error(`费用定义不存在：${id}`);
+    const next: StoredFeeDefinition = { ...cur, ...patch, updatedAt: this.now() };
+    await this.db.execute(
+      'UPDATE fee_definitions SET name=$1, calc_type=$2, tiers=$3, archived=$4, updated_at=$5 WHERE id=$6',
+      [next.name, next.calcType, JSON.stringify(next.tiers), next.archived ? 1 : 0, next.updatedAt, id],
+    );
+    return (await this.getFeeDefinition(id))!;
   }
 
   // ---- 生意：代采采购单（C2d）----

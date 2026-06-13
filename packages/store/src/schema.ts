@@ -1,9 +1,10 @@
-import type { Account, Book, InventoryKind, OrderLine, Posting, PurchaseKind, PurchaseLine, SettlementDirection, CounterpartyType, OrderStatus } from '@app/core';
+import type { Account, Book, FeeDefinition, FeeTier, InventoryKind, OrderLine, Posting, PurchaseKind, PurchaseLine, SettlementDirection, CounterpartyType, OrderStatus } from '@app/core';
 import type {
   StoredAccount,
   StoredBook,
   StoredBudget,
   StoredCustomer,
+  StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
@@ -105,6 +106,8 @@ export interface OrderLineRow {
   qty: number;
   unit_price: number;
   product_id: string | null;
+  /** 应用的额外费用 id（JSON 数组字符串）；null/缺省 = 无（C2 Step 4） */
+  fee_ids: string | null;
 }
 export interface ProductRow {
   id: string;
@@ -286,7 +289,43 @@ export function toSupplier(r: SupplierRow): StoredSupplier {
 }
 
 export function toOrderLine(r: OrderLineRow): OrderLine {
-  return { id: r.id, orderId: r.order_id, name: r.name, qty: r.qty, unitPrice: r.unit_price, productId: r.product_id };
+  return { id: r.id, orderId: r.order_id, name: r.name, qty: r.qty, unitPrice: r.unit_price, productId: r.product_id, feeIds: parseTags(r.fee_ids ?? '[]') };
+}
+
+export interface FeeDefinitionRow {
+  id: string;
+  book_id: string;
+  name: string;
+  calc_type: string;
+  tiers: string;
+  archived: number;
+  created_at: string;
+  updated_at: string;
+  deleted: number;
+}
+
+/** 安全解析阶梯档位 JSON：坏数据降级为空数组。 */
+function parseTiers(raw: string): FeeTier[] {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? (v as FeeTier[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function toFeeDefinition(r: FeeDefinitionRow): StoredFeeDefinition {
+  return {
+    id: r.id,
+    bookId: r.book_id,
+    name: r.name,
+    calcType: r.calc_type as FeeDefinition['calcType'],
+    tiers: parseTiers(r.tiers),
+    archived: r.archived !== 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deleted: r.deleted !== 0,
+  };
 }
 
 export function toProduct(r: ProductRow): StoredProduct {

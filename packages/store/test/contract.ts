@@ -603,6 +603,31 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
       await expect(repo.removePurchase('pu1')).rejects.toThrow();
     });
 
+    it('额外费用定义 add/list/update + 订单行 feeIds 往返（C2 Step 4）', async () => {
+      const repo = await seed(makeRepo(fakeClock()));
+      await repo.addCustomer({ id: 'cu1', bookId: B2, name: '张三', phone: '', note: '', dueDays: 0, archived: false });
+      const f = await repo.addFeeDefinition({ id: 'f1', bookId: B2, name: '佣金', calcType: 'percent', tiers: [{ threshold: 0, value: 5 }, { threshold: 60000, value: 4 }], archived: false });
+      expect(f.calcType).toBe('percent');
+      expect(f.tiers).toEqual([{ threshold: 0, value: 5 }, { threshold: 60000, value: 4 }]);
+      await expect(repo.addFeeDefinition({ id: 'fX', bookId: 'ghost', name: 'x', calcType: 'fixed', tiers: [], archived: false })).rejects.toThrow();
+      expect((await repo.listFeeDefinitions({ bookId: B2 })).map((x) => x.id)).toEqual(['f1']);
+      await repo.updateFeeDefinition('f1', { archived: true, tiers: [{ threshold: 0, value: 3 }] });
+      expect((await repo.listFeeDefinitions({ bookId: B2 })).length).toBe(0); // 归档默认排除
+      const arch = (await repo.listFeeDefinitions({ bookId: B2, includeArchived: true }))[0]!;
+      expect(arch.tiers).toEqual([{ threshold: 0, value: 3 }]);
+      await expect(repo.updateFeeDefinition('nope', { name: 'x' })).rejects.toThrow();
+      // 订单行 feeIds 往返：有费用的行存 ['f1']，无费用的行归一化为 []
+      await repo.addOrder({
+        id: 'o1', bookId: B2, customerId: 'cu1', date: '2026-06-10', currency: 'CNY', status: 'pending_ship', note: '', revenueTxnId: null,
+        lines: [
+          { id: 'l1', orderId: 'o1', name: '货', qty: 2, unitPrice: 10000, productId: null, feeIds: ['f1'] },
+          { id: 'l2', orderId: 'o1', name: '服务', qty: 1, unitPrice: 5000, productId: null },
+        ],
+      });
+      const got = await repo.getOrder('o1');
+      expect(got!.lines.map((l) => l.feeIds)).toEqual([['f1'], []]);
+    });
+
     it('订单行可关联商品 id 并往返；自由文本行 productId=null', async () => {
       const repo = await seed(makeRepo(fakeClock()));
       await repo.addCustomer({ id: 'cu1', bookId: B2, name: '张三', phone: '', note: '', dueDays: 0, archived: false });

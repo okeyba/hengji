@@ -1,11 +1,12 @@
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
   BudgetPatch,
   Clock,
   CustomerPatch,
+  FeeDefinitionPatch,
   OrderPatch,
   ProductPatch,
   PurchasePatch,
@@ -14,6 +15,7 @@ import type {
   StoredBook,
   StoredBudget,
   StoredCustomer,
+  StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
@@ -50,6 +52,7 @@ export class InMemoryRepository implements Repository {
   private readonly orders = new Map<string, StoredOrder>();
   private readonly settlements = new Map<string, StoredSettlement>();
   private readonly products = new Map<string, StoredProduct>();
+  private readonly feeDefinitions = new Map<string, StoredFeeDefinition>();
   private readonly purchases = new Map<string, StoredPurchase>();
   private readonly settings = new Map<string, StoredSetting>();
   private readonly reconciliations = new Map<string, StoredReconciliation>();
@@ -329,6 +332,8 @@ export class InMemoryRepository implements Repository {
     if (cust.bookId !== order.bookId) throw new Error('订单客户必须与订单同账本');
     const ts = this.now();
     const stored: StoredOrder = { ...clone(order), createdAt: ts, updatedAt: ts, deleted: false };
+    // 归一化 feeIds 为数组（与 SQLite 实现 toOrderLine 一致，缺省 → []）
+    stored.lines = stored.lines.map((l) => ({ ...l, feeIds: l.feeIds ?? [] }));
     this.orders.set(order.id, stored);
     return clone(stored);
   }
@@ -482,6 +487,35 @@ export class InMemoryRepository implements Repository {
     if (!p || p.deleted) throw new Error(`商品不存在：${id}`);
     const updated: StoredProduct = { ...p, ...patch, updatedAt: this.now() };
     this.products.set(id, updated);
+    return clone(updated);
+  }
+
+  // ---- 生意：额外费用定义（C2 Step 4）----
+  async addFeeDefinition(fee: FeeDefinition): Promise<StoredFeeDefinition> {
+    if (this.feeDefinitions.has(fee.id)) throw new Error(`费用定义已存在：${fee.id}`);
+    this.liveBook(fee.bookId);
+    const ts = this.now();
+    const stored: StoredFeeDefinition = { ...clone(fee), createdAt: ts, updatedAt: ts, deleted: false };
+    this.feeDefinitions.set(fee.id, stored);
+    return clone(stored);
+  }
+
+  async listFeeDefinitions(opts: { bookId?: string; includeArchived?: boolean } = {}): Promise<StoredFeeDefinition[]> {
+    const out: StoredFeeDefinition[] = [];
+    for (const f of this.feeDefinitions.values()) {
+      if (f.deleted) continue;
+      if (!opts.includeArchived && f.archived) continue;
+      if (opts.bookId && f.bookId !== opts.bookId) continue;
+      out.push(clone(f));
+    }
+    return out;
+  }
+
+  async updateFeeDefinition(id: string, patch: FeeDefinitionPatch): Promise<StoredFeeDefinition> {
+    const f = this.feeDefinitions.get(id);
+    if (!f || f.deleted) throw new Error(`费用定义不存在：${id}`);
+    const updated: StoredFeeDefinition = { ...f, ...clone(patch), updatedAt: this.now() };
+    this.feeDefinitions.set(id, updated);
     return clone(updated);
   }
 

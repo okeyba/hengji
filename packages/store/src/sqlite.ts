@@ -1,12 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
   BudgetPatch,
   Clock,
   CustomerPatch,
+  FeeDefinitionPatch,
   OrderPatch,
   ProductPatch,
   PurchasePatch,
@@ -15,6 +16,7 @@ import type {
   StoredBook,
   StoredBudget,
   StoredCustomer,
+  StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
   StoredProduct,
@@ -34,6 +36,7 @@ import {
   toBook,
   toBudget,
   toCustomer,
+  toFeeDefinition,
   toInventoryMovement,
   toOrder,
   toOrderLine,
@@ -52,6 +55,7 @@ import type {
   BookRow,
   BudgetRow,
   CustomerRow,
+  FeeDefinitionRow,
   InventoryMovementRow,
   OrderLineRow,
   OrderRow,
@@ -509,9 +513,9 @@ export class SqliteRepository implements Repository {
 
   private insertOrderLines(orderId: string, lines: Order['lines']): void {
     const stmt = this.db.prepare(
-      `INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id, fee_ids) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
-    for (const l of lines) stmt.run(l.id, orderId, l.name, l.qty, l.unitPrice, l.productId);
+    for (const l of lines) stmt.run(l.id, orderId, l.name, l.qty, l.unitPrice, l.productId, JSON.stringify(l.feeIds ?? []));
   }
 
   async addOrder(order: Order): Promise<StoredOrder> {
@@ -717,6 +721,44 @@ export class SqliteRepository implements Repository {
       .prepare(`UPDATE products SET name=?, cost_price=?, sale_price=?, quote_only=?, unit=?, archived=?, updated_at=? WHERE id=?`)
       .run(next.name, next.costPrice, next.salePrice, next.quoteOnly ? 1 : 0, next.unit, next.archived ? 1 : 0, next.updatedAt, id);
     return (await this.getProduct(id))!;
+  }
+
+  // ---- 生意：额外费用定义（C2 Step 4）----
+  async addFeeDefinition(fee: FeeDefinition): Promise<StoredFeeDefinition> {
+    if (this.db.prepare('SELECT 1 FROM fee_definitions WHERE id = ?').get(fee.id)) throw new Error(`费用定义已存在：${fee.id}`);
+    this.assertBook(fee.bookId);
+    const ts = this.now();
+    this.db
+      .prepare(`INSERT INTO fee_definitions (id, book_id, name, calc_type, tiers, archived, created_at, updated_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+      .run(fee.id, fee.bookId, fee.name, fee.calcType, JSON.stringify(fee.tiers), fee.archived ? 1 : 0, ts, ts);
+    return (await this.getFeeDefinition(fee.id))!;
+  }
+
+  private async getFeeDefinition(id: string): Promise<StoredFeeDefinition | null> {
+    const r = this.db.prepare('SELECT * FROM fee_definitions WHERE id = ? AND deleted = 0').get(id) as FeeDefinitionRow | undefined;
+    return r ? toFeeDefinition(r) : null;
+  }
+
+  async listFeeDefinitions(opts: { bookId?: string; includeArchived?: boolean } = {}): Promise<StoredFeeDefinition[]> {
+    const cond = ['deleted = 0'];
+    const params: string[] = [];
+    if (!opts.includeArchived) cond.push('archived = 0');
+    if (opts.bookId) {
+      cond.push('book_id = ?');
+      params.push(opts.bookId);
+    }
+    const rows = this.db.prepare(`SELECT * FROM fee_definitions WHERE ${cond.join(' AND ')}`).all(...params) as unknown as FeeDefinitionRow[];
+    return rows.map(toFeeDefinition);
+  }
+
+  async updateFeeDefinition(id: string, patch: FeeDefinitionPatch): Promise<StoredFeeDefinition> {
+    const cur = await this.getFeeDefinition(id);
+    if (!cur) throw new Error(`费用定义不存在：${id}`);
+    const next: StoredFeeDefinition = { ...cur, ...patch, updatedAt: this.now() };
+    this.db
+      .prepare(`UPDATE fee_definitions SET name=?, calc_type=?, tiers=?, archived=?, updated_at=? WHERE id=?`)
+      .run(next.name, next.calcType, JSON.stringify(next.tiers), next.archived ? 1 : 0, next.updatedAt, id);
+    return (await this.getFeeDefinition(id))!;
   }
 
   // ---- 生意：代采采购单（C2d）----

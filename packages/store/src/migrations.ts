@@ -24,6 +24,7 @@
  *   stock/expense 无订单存 ''、映射时 ''↔null），避免重建表/触发 purchase_lines 级联删除。纯新增列。
  * - m14：账户全局化。accounts.global 标记真金白银账户全账本共用（现金/银行/支付宝…）；
  *   既有账户默认 0（账本专属、行为不变）；纯新增列。全局账户余额归全局资金池、对账按账户跨账本。
+ * - m15：额外费用+公式引擎（C2 Step 4）。fee_definitions 表（账本级声明式阶梯费用）+ order_lines.fee_ids 列；纯新增。
  */
 
 export interface SqlRunner {
@@ -312,7 +313,25 @@ const M13: string[] = [
 // 既有账户默认 0（=账本专属，行为不变）；纯新增列。全局账户余额归全局资金池，记账下拉跨账本可选，对账按账户。
 const M14: string[] = [`ALTER TABLE accounts ADD COLUMN global INTEGER NOT NULL DEFAULT 0`];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14];
+// m15：额外费用 + 公式引擎（C2 Step 4，flagship）。fee_definitions 账本级费用定义（声明式阶梯 tiers JSON）；
+// order_lines.fee_ids 记本行应用的费用 id（JSON 数组）。既有订单行 fee_ids 默认 NULL（=无费用）。纯新增。
+const M15: string[] = [
+  `CREATE TABLE IF NOT EXISTS fee_definitions (
+    id TEXT PRIMARY KEY,
+    book_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    calc_type TEXT NOT NULL,
+    tiers TEXT NOT NULL DEFAULT '[]',
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  `ALTER TABLE order_lines ADD COLUMN fee_ids TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_fee_definitions_book ON fee_definitions(book_id)`,
+];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

@@ -1,4 +1,4 @@
-import type { Account, Book, Budget, Customer, InventoryMovement, Order, OrderStatus, Product, Purchase, PurchaseLine, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, FeeTier, InventoryMovement, Order, OrderStatus, Product, Purchase, PurchaseLine, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 
 /** 每条记录都带的同步元数据，为将来的云同步预留。 */
 export interface SyncMeta {
@@ -18,6 +18,7 @@ export type StoredOrder = Order & SyncMeta;
 export type StoredSettlement = Settlement & SyncMeta;
 export type StoredProduct = Product & SyncMeta;
 export type StoredPurchase = Purchase & SyncMeta;
+export type StoredFeeDefinition = FeeDefinition & SyncMeta;
 export type StoredReconciliation = Reconciliation & SyncMeta;
 export type StoredInventoryMovement = InventoryMovement & SyncMeta;
 
@@ -79,6 +80,14 @@ export interface ProductPatch {
   salePrice?: number;
   quoteOnly?: boolean;
   unit?: string;
+  archived?: boolean;
+}
+
+/** 额外费用定义可改字段（C2 Step 4）。 */
+export interface FeeDefinitionPatch {
+  name?: string;
+  calcType?: FeeDefinition['calcType'];
+  tiers?: FeeTier[];
   archived?: boolean;
 }
 
@@ -162,6 +171,11 @@ export interface Repository {
   getProduct(id: string): Promise<StoredProduct | null>;
   listProducts(opts?: { bookId?: string; includeArchived?: boolean }): Promise<StoredProduct[]>;
   updateProduct(id: string, patch: ProductPatch): Promise<StoredProduct>;
+
+  // 额外费用定义（v0.2 C2 Step 4）：账本级可复用，开单行勾选应用。约束：必须挂在已存在账本上。
+  addFeeDefinition(fee: FeeDefinition): Promise<StoredFeeDefinition>;
+  listFeeDefinitions(opts?: { bookId?: string; includeArchived?: boolean }): Promise<StoredFeeDefinition[]>;
+  updateFeeDefinition(id: string, patch: FeeDefinitionPatch): Promise<StoredFeeDefinition>;
 
   // 采购单（C2 模型重构）：「为此单采购」，一张采购单对应一张订单。开单不足时生成草稿态
   // （supplierId=''、txnId=null），确认时用 updatePurchase 补供应商/采购价/记账 id，作废用 removePurchase。
