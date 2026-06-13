@@ -23,20 +23,19 @@ export default function OverviewAll({
 }) {
   const month = currentMonth();
   const period = { from: `${month}-01`, to: `${month}-31` };
-  // 只汇总可见（非归档）账本：books 已排除归档，但 accounts/txns 是全量，
-  // 按 books 的 id 过滤，避免归档账本仍计入总净资产/收支、与下方各账本卡片之和对不上。
+  // 只汇总可见（非归档）账本的【账本专属】账户；【全局账户】跨账本共享、永远计入（home 账本归档不影响）。
+  // 余额用全量 txns：账户已按上面规则筛选，再按流水过滤反而会砍掉全局账户在归档账本里的那部分余额。
   const visible = new Set(books.map((b) => b.id));
-  const va = accounts.filter((x) => visible.has(x.bookId));
-  const vt = txns.filter((x) => visible.has(x.bookId));
+  const va = accounts.filter((x) => x.global || visible.has(x.bookId));
   const display = convert.display;
-  const totalNw = netWorth(vt, va, convert); // 全部净资产（折合展示币种）= 全局资金 + Σ各账本专属净额
+  const totalNw = netWorth(txns, va, convert); // 全部净资产（折合展示币种）= 全局资金 + Σ各账本专属净额
   // 净资产按币种分组（原币精确）——多于一种币种时展示分组小计
-  const byCur = [...balancesByCurrency(vt, va).entries()].filter(([, v]) => v !== 0);
+  const byCur = [...balancesByCurrency(txns, va).entries()].filter(([, v]) => v !== 0);
   const converted = byCur.some(([c]) => c !== display); // 持有非展示币种 → 标头标注折合
   const multiCurrency = byCur.length > 1; // 多于一种币种 → 列各币种原币小计
   // 全局资金（真金白银，全账本共享）——按 a.global 区分、单列一次，不计入某账本，杜绝重复计
   const globalAccts = va.filter((a) => a.global);
-  const funds = netWorth(vt, globalAccts, convert);
+  const funds = netWorth(txns, globalAccts, convert);
   const hasGlobal = globalAccts.length > 0;
 
   // 全局记账口径（对所有账本一致），各账本算收支再求和——与各账本 Dashboard 数字一致。

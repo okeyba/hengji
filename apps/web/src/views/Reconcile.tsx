@@ -26,7 +26,13 @@ export default function Reconcile({
   books: StoredBook[];
   reload: () => Promise<void>;
 }) {
-  const bookName = (id: string): string => books.find((b) => b.id === id)?.name ?? '（未知账本）';
+  // books 为全量（含归档），故全局账户跨归档账本的历史流水也能查到名字（标「已归档」），不再显示「未知账本」。
+  const bookName = (id: string): string => {
+    const b = books.find((x) => x.id === id);
+    return b ? (b.archived ? `${b.name}（已归档）` : b.name) : '（未知账本）';
+  };
+  // 补录归属账本只能选未归档账本（不把交易写回已归档账本）。
+  const liveBooks = books.filter((b) => !b.archived);
 
   // 全部资产/负债账户（含全局共享）跨账本对账；按账本名+账户名排序，全局置顶
   const recAccounts = useMemo(
@@ -102,7 +108,7 @@ export default function Reconcile({
   const addCats = accounts.filter((a) => a.type === aKind && a.bookId === aBook && !a.global && !a.archived);
   const effACat = addCats.some((c) => c.id === aCatId) ? aCatId : (addCats[0]?.id ?? '');
   // 补录归属账本：全局账户可选任意账本；账本专属账户只能落其所属账本（铁律）
-  const addBookOptions = selAccount?.global ? books : books.filter((b) => b.id === homeBookId);
+  const addBookOptions = selAccount?.global ? liveBooks : liveBooks.filter((b) => b.id === homeBookId);
 
   const currentBalance = useMemo(() => accountBalance(allTxns, accountId), [allTxns, accountId]);
   // 已勾选合计 / 差额：始终按整账户（全部 rows），筛选只影响展示
@@ -349,7 +355,7 @@ export default function Reconcile({
               onClick={() => {
                 setAddOpen(true);
                 setADate(stmtDate);
-                setABook(selAccount?.global ? (books[0]?.id ?? '') : homeBookId);
+                setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
                 setErr(null);
               }}
             >

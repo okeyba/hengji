@@ -86,7 +86,7 @@ const SIMPLE_BUSINESS_TABS: Array<[View, string]> = [
 
 export default function App() {
   const [repo, setRepo] = useState<Repository | null>(null);
-  const [books, setBooks] = useState<StoredBook[]>([]);
+  const [allBooks, setAllBooks] = useState<StoredBook[]>([]); // 含归档（活跃账本由下方 books 派生）
   const [accounts, setAccounts] = useState<StoredAccount[]>([]);
   const [txns, setTxns] = useState<StoredTransaction[]>([]);
   const [budgets, setBudgets] = useState<StoredBudget[]>([]);
@@ -107,7 +107,7 @@ export default function App() {
 
   async function loadFrom(r: Repository): Promise<void> {
     const [bk, a, t, b, s, os, cs, st, sup, fd] = await Promise.all([
-      r.listBooks(),
+      r.listBooks({ includeArchived: true }),
       r.listAccounts(),
       r.listTransactions(),
       r.listBudgets(),
@@ -119,7 +119,7 @@ export default function App() {
       r.listFeeDefinitions({ includeArchived: true }),
     ]);
     setCurrencyRegistry(currenciesOf(s)); // 注入币种注册表，供 fmtMoney 等取符号/小数位
-    setBooks(bk);
+    setAllBooks(bk);
     setAccounts(a);
     setTxns(t);
     setBudgets(b);
@@ -138,20 +138,27 @@ export default function App() {
     });
   }, []);
 
+  // 归档账本只置 book.archived，其账户/流水仍 live（listAccounts/listTransactions 不按账本归档过滤）→
+  // 聚合须按「未归档账本」收窄：归档账本的【账本专属】账户隐藏；但【全局账户】是跨账本共享、home 仅创建元数据，
+  // home 账本被归档仍保留（否则共享的真金白银账户会从其它账本蒸发）。books=活跃账本；allBooks 供 Reconcile 查归档名。
+  const books = useMemo(() => allBooks.filter((b) => !b.archived), [allBooks]);
+  const visible = useMemo(() => new Set(books.map((b) => b.id)), [books]);
+  const liveAccounts = useMemo(() => accounts.filter((a) => a.global || visible.has(a.bookId)), [accounts, visible]);
+
   const curBook = useMemo(() => books.find((b) => b.id === cur) ?? null, [books, cur]);
   const scoped = useMemo(
     () => ({
-      // 全局账户对所有账本可见；本账本专属账户按 bookId
-      accounts: accounts.filter((a) => a.global || a.bookId === cur),
+      // 全局账户对所有账本可见；本账本专属账户按 bookId（均已剔除归档账本的账户/孤儿全局账户）
+      accounts: liveAccounts.filter((a) => a.global || a.bookId === cur),
       txns: txns.filter((t) => t.bookId === cur),
       budgets: budgets.filter((b) => b.bookId === cur),
     }),
-    [accounts, txns, budgets, cur],
+    [liveAccounts, txns, budgets, cur],
   );
 
-  // 多币种生效值：开关开 **或** 持有任一外币账户（accounts 已排除归档）。
-  // 持有外币数据时强制视为开启——否则「关却仍显示外币」自相矛盾；要回纯人民币须先归档所有外币账户。
-  const mcEnabled = multiCurrencyOn(settings) || accounts.some((a) => a.currency !== 'CNY');
+  // 多币种生效值：开关开 **或** 持有任一外币账户（liveAccounts 已排除归档账户 + 归档账本的账户）。
+  // 持有外币数据时强制视为开启——否则「关却仍显示外币」自相矛盾；归档所有外币账户/账本后即可切回纯人民币。
+  const mcEnabled = multiCurrencyOn(settings) || liveAccounts.some((a) => a.currency !== 'CNY');
 
   // 全局设置（app 级，对所有账本生效）；在任何提前 return 之前调用，保证 Hook 顺序稳定。
   const convert = useMemo(() => convertCtxOf(settings, mcEnabled), [settings, mcEnabled]);
@@ -341,11 +348,11 @@ export default function App() {
           <Settings
             repo={repo}
             settings={settings}
-            usedCurrencies={new Set(accounts.map((a) => a.currency))}
+            usedCurrencies={new Set(liveAccounts.map((a) => a.currency))}
             reload={() => loadFrom(repo)}
           />
         ) : cur === RECONCILE ? (
-          <Reconcile repo={repo} accounts={accounts} allTxns={txns} books={books} reload={() => loadFrom(repo)} />
+          <Reconcile repo={repo} accounts={liveAccounts} allTxns={txns} books={allBooks} reload={() => loadFrom(repo)} />
         ) : cur === OVERVIEW || !data ? (
           <OverviewAll books={books} accounts={accounts} txns={txns} settings={settings} convert={convert} onOpen={openBook} />
         ) : (
