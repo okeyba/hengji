@@ -1,29 +1,48 @@
 import { useEffect, useMemo, useState } from 'react';
 import { accountBalance, adjustBalanceEntry, expandEntry, toMinor, unclearedCount } from '@app/core';
-import type { StoredReconciliation } from '@app/store';
-import type { AppData } from '../App';
+import type { Repository, StoredAccount, StoredBook, StoredReconciliation, StoredTransaction } from '@app/store';
 import { genId } from '../db';
 import { currencyDef, fmtMoney, todayISO } from '../format';
 
 const GAIN_LOSS = '盘盈盘亏';
 type AddKind = 'income' | 'expense';
 
-/** 勾对式对账：选账户 → 填对账单余额 → 逐笔勾选 → 差额对到 0 → 完成对账。 */
-export default function Reconcile({ data }: { data: AppData }) {
-  const { repo, book, accounts, txns, reload } = data;
+/**
+ * 勾对式对账（账户全局化 Phase 4：全局入口、按账户跨账本）：
+ * 选账户 → 填对账单余额 → 逐笔勾选（每条流水标所属账本、可按账本筛选核对各自小计）→ 差额对到 0 → 完成。
+ * 全局共享账户的流水散落多账本，故用全量交易聚合该账户分录。补录/调整：全局账户由用户手动选账本，
+ * 账本专属账户固定其所属账本。
+ */
+export default function Reconcile({
+  repo,
+  accounts,
+  allTxns,
+  books,
+  reload,
+}: {
+  repo: Repository;
+  accounts: StoredAccount[];
+  allTxns: StoredTransaction[];
+  books: StoredBook[];
+  reload: () => Promise<void>;
+}) {
+  const bookName = (id: string): string => books.find((b) => b.id === id)?.name ?? '（未知账本）';
 
-  // 暂排除全局共享账户：其流水散落多账本，需按账户跨账本对账（账户全局化 Phase 4 的全局对账入口），
-  // 当前账本内对账只见本账本流水、会漏算 → 先不在此列出，避免误对。
+  // 全部资产/负债账户（含全局共享）跨账本对账；按账本名+账户名排序，全局置顶
   const recAccounts = useMemo(
-    () => accounts.filter((a) => (a.type === 'asset' || a.type === 'liability') && !a.archived && !a.global),
+    () =>
+      accounts
+        .filter((a) => (a.type === 'asset' || a.type === 'liability') && !a.archived)
+        .sort((x, y) => Number(!!y.global) - Number(!!x.global) || x.bookId.localeCompare(y.bookId) || x.name.localeCompare(y.name)),
     [accounts],
   );
 
   const clearedIdsOf = (accountId: string): Set<string> =>
-    new Set(txns.flatMap((t) => t.postings).filter((p) => p.accountId === accountId && p.cleared).map((p) => p.id));
+    new Set(allTxns.flatMap((t) => t.postings).filter((p) => p.accountId === accountId && p.cleared).map((p) => p.id));
 
   const [accountId, setAccountId] = useState(() => recAccounts[0]?.id ?? '');
   const [checked, setChecked] = useState<Set<string>>(() => clearedIdsOf(recAccounts[0]?.id ?? ''));
+  const [bookFilter, setBookFilter] = useState<'all' | string>('all'); // 流水按账本筛选（仅核对用，不影响整账户对账）
   const [stmt, setStmt] = useState('');
   const [stmtDate, setStmtDate] = useState(todayISO());
   const [lastRec, setLastRec] = useState<StoredReconciliation | null>(null);
@@ -36,7 +55,13 @@ export default function Reconcile({ data }: { data: AppData }) {
   const [aKind, setAKind] = useState<AddKind>('expense');
   const [aAmount, setAAmount] = useState('');
   const [aCatId, setACatId] = useState('');
+  const [aBook, setABook] = useState('');
   const [aDate, setADate] = useState(todayISO());
+
+  const selAccount = recAccounts.find((a) => a.id === accountId);
+  const homeBookId = selAccount?.bookId ?? '';
+  const curCode = selAccount?.currency ?? 'CNY';
+  const dec = currencyDef(curCode).decimals;
 
   // 上次对账记录：随账户与数据变化刷新（不碰 checked，避免抹掉勾选中途状态）
   useEffect(() => {
@@ -47,39 +72,43 @@ export default function Reconcile({ data }: { data: AppData }) {
     return () => {
       alive = false;
     };
-  }, [accountId, txns, repo]);
+  }, [accountId, allTxns, repo]);
 
   function selectAccount(id: string): void {
     setAccountId(id);
     setChecked(clearedIdsOf(id));
+    setBookFilter('all');
     setStmt('');
     setMsg(null);
     setErr(null);
   }
 
-  // 该账户的分录（含所在交易信息），按日期升序——贴对账单阅读顺序
-  const rows = useMemo(() => {
-    const out: Array<{ pid: string; txnId: string; date: string; title: string; amount: number; cleared: boolean }> = [];
-    for (const t of txns) {
+  // 该账户的分录（含所在交易的账本），按日期升序——贴对账单阅读顺序
+  const allRows = useMemo(() => {
+    const out: Array<{ pid: string; txnId: string; bookId: string; date: string; title: string; amount: number; cleared: boolean }> = [];
+    for (const t of allTxns) {
       for (const p of t.postings) {
         if (p.accountId !== accountId) continue;
-        out.push({ pid: p.id, txnId: t.id, date: t.date, title: t.payee || t.note || '交易', amount: p.amount, cleared: !!p.cleared });
+        out.push({ pid: p.id, txnId: t.id, bookId: t.bookId, date: t.date, title: t.payee || t.note || '交易', amount: p.amount, cleared: !!p.cleared });
       }
     }
     return out.sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : 0));
-  }, [txns, accountId]);
+  }, [allTxns, accountId]);
 
-  // 对账账户的币种决定金额精度与显示符号（账户可为非人民币）
-  const curCode = recAccounts.find((a) => a.id === accountId)?.currency ?? 'CNY';
-  const dec = currencyDef(curCode).decimals;
-  const addCats = accounts.filter((a) => a.type === aKind && !a.archived);
+  // 该账户涉及的账本（用于筛选 chips）
+  const rowBooks = useMemo(() => [...new Set(allRows.map((r) => r.bookId))], [allRows]);
+  const rows = bookFilter === 'all' ? allRows : allRows.filter((r) => r.bookId === bookFilter);
+
+  const addCats = accounts.filter((a) => a.type === aKind && a.bookId === aBook && !a.global && !a.archived);
   const effACat = addCats.some((c) => c.id === aCatId) ? aCatId : (addCats[0]?.id ?? '');
+  // 补录归属账本：全局账户可选任意账本；账本专属账户只能落其所属账本（铁律）
+  const addBookOptions = selAccount?.global ? books : books.filter((b) => b.id === homeBookId);
 
-  const currentBalance = useMemo(() => accountBalance(txns, accountId), [txns, accountId]);
-  const checkedSum = useMemo(
-    () => rows.reduce((s, r) => (checked.has(r.pid) ? s + r.amount : s), 0),
-    [rows, checked],
-  );
+  const currentBalance = useMemo(() => accountBalance(allTxns, accountId), [allTxns, accountId]);
+  // 已勾选合计 / 差额：始终按整账户（全部 rows），筛选只影响展示
+  const checkedSum = useMemo(() => allRows.reduce((s, r) => (checked.has(r.pid) ? s + r.amount : s), 0), [allRows, checked]);
+  // 当前筛选（某账本）下的小计——对完整账户后核对各账本贡献
+  const filteredCheckedSum = bookFilter === 'all' ? null : rows.reduce((s, r) => (checked.has(r.pid) ? s + r.amount : s), 0);
 
   const stmtTrim = stmt.trim();
   const stmtNum = stmtTrim === '' ? null : Number(stmtTrim);
@@ -102,55 +131,37 @@ export default function Reconcile({ data }: { data: AppData }) {
     setBusy(true);
     setErr(null);
     try {
-      const checkedIds = rows.filter((r) => checked.has(r.pid)).map((r) => r.pid);
-      const uncheckedIds = rows.filter((r) => !checked.has(r.pid)).map((r) => r.pid);
+      const checkedIds = allRows.filter((r) => checked.has(r.pid)).map((r) => r.pid);
+      const uncheckedIds = allRows.filter((r) => !checked.has(r.pid)).map((r) => r.pid);
       await repo.setPostingsCleared(checkedIds, true);
       if (uncheckedIds.length) await repo.setPostingsCleared(uncheckedIds, false);
       await repo.addReconciliation({
         id: genId(),
-        bookId: book.id,
+        bookId: homeBookId, // 对账记录挂账户 home 账本（仅元数据；查询按 accountId）
         accountId,
         statementBalance: stmtMinor!,
         statementDate: stmtDate,
         completedAt: new Date().toISOString(),
       });
       await reload();
-      const acctName = accounts.find((a) => a.id === accountId)?.name ?? '账户';
-      setMsg(`已完成对账：「${acctName}」余额与对账单 ${fmtMoney(stmtMinor!, curCode)} 相符，${checkedIds.length} 笔已核销。`);
+      setMsg(`已完成对账：「${selAccount?.name ?? '账户'}」余额与对账单 ${fmtMoney(stmtMinor!, curCode)} 相符，${checkedIds.length} 笔已核销。`);
     } finally {
       setBusy(false);
     }
   }
 
-  /** 逃生口：差额查不出错时，记一笔盘盈盘亏调整把差额对平，并自动勾选这笔调整。 */
+  /** 逃生口：差额查不出错时，记一笔盘盈盘亏调整把差额对平，并自动勾选这笔调整（落账户 home 账本）。 */
   async function adjust(): Promise<void> {
     if (diff === null || diff === 0 || busy) return;
     setBusy(true);
     setErr(null);
     try {
-      let gl = accounts.find((a) => a.type === 'income' && a.name === GAIN_LOSS);
+      let gl = accounts.find((a) => a.type === 'income' && a.name === GAIN_LOSS && a.bookId === homeBookId);
       if (!gl) {
-        gl = await repo.addAccount({
-          id: genId(),
-          bookId: book.id,
-          name: GAIN_LOSS,
-          type: 'income',
-          parentId: null,
-          currency: accounts[0]?.currency ?? 'CNY',
-          archived: false,
-        });
+        gl = await repo.addAccount({ id: genId(), bookId: homeBookId, name: GAIN_LOSS, type: 'income', parentId: null, currency: 'CNY', archived: false });
       }
       const entry = adjustBalanceEntry(
-        {
-          bookId: book.id,
-          date: stmtDate,
-          accountId,
-          currentBalance: checkedSum,
-          targetValue: stmtMinor!,
-          counterAccountId: gl.id,
-          currency: curCode, // 调整腿按对账账户的币种
-          note: '对账盘盈盘亏调整',
-        },
+        { bookId: homeBookId, date: stmtDate, accountId, currentBalance: checkedSum, targetValue: stmtMinor!, counterAccountId: gl.id, currency: curCode, note: '对账盘盈盘亏调整' },
         genId,
       );
       await repo.addTransaction(entry);
@@ -165,7 +176,7 @@ export default function Reconcile({ data }: { data: AppData }) {
     }
   }
 
-  /** 内联补录一笔漏记的收支（落在对账账户上），并自动勾选——免去跳「记一笔」丢失勾选进度。 */
+  /** 内联补录一笔漏记的收支（落对账账户 + 用户所选账本的收支分类），并自动勾选。 */
   async function addMissing(): Promise<void> {
     if (busy) return;
     setErr(null);
@@ -174,19 +185,23 @@ export default function Reconcile({ data }: { data: AppData }) {
       setErr('请输入有效的补录金额');
       return;
     }
+    if (!aBook) {
+      setErr('请选择补录归属账本');
+      return;
+    }
     if (!effACat) {
-      setErr(`本账本没有${aKind === 'income' ? '收入' : '支出'}分类，先去「账户」页加一个`);
+      setErr(`「${bookName(aBook)}」没有${aKind === 'income' ? '收入' : '支出'}分类，先去该账本「账户」页加一个`);
       return;
     }
     setBusy(true);
     try {
       const entry = expandEntry(
-        { kind: aKind, bookId: book.id, date: aDate, amount: toMinor(major, dec), currency: curCode, payee: '对账补录', accountId, categoryId: effACat },
+        { kind: aKind, bookId: aBook, date: aDate, amount: toMinor(major, dec), currency: curCode, payee: '对账补录', accountId, categoryId: effACat },
         genId,
       );
       await repo.addTransaction(entry);
       const newPosting = entry.postings.find((p) => p.accountId === accountId)!;
-      setChecked((prev) => new Set(prev).add(newPosting.id)); // 补录即在对账单上 → 自动勾选
+      setChecked((prev) => new Set(prev).add(newPosting.id));
       setAAmount('');
       setAddOpen(false);
       await reload();
@@ -222,10 +237,10 @@ export default function Reconcile({ data }: { data: AppData }) {
     return (
       <>
         <div className="main-head">
-          <h2>{book.name} · 对账</h2>
+          <h2>对账</h2>
         </div>
         <div className="card">
-          <p className="muted">本账本还没有资产/负债账户可对账。先到「账户」页添加。</p>
+          <p className="muted">还没有资产/负债账户可对账。先到某账本「账户」页添加。</p>
         </div>
       </>
     );
@@ -234,8 +249,8 @@ export default function Reconcile({ data }: { data: AppData }) {
   return (
     <>
       <div className="main-head">
-        <h2>{book.name} · 对账</h2>
-        <span className="muted">勾对式 · 逐笔核对</span>
+        <h2>对账</h2>
+        <span className="muted">勾对式 · 按账户跨账本</span>
       </div>
 
       <div className="card">
@@ -244,10 +259,10 @@ export default function Reconcile({ data }: { data: AppData }) {
             对账账户
             <select value={accountId} onChange={(e) => selectAccount(e.target.value)}>
               {recAccounts.map((a) => {
-                const n = unclearedCount(txns, a.id);
+                const n = unclearedCount(allTxns, a.id);
                 return (
                   <option key={a.id} value={a.id}>
-                    {a.name}
+                    {a.name} · {a.global ? '全局共享' : bookName(a.bookId)}
                     {n > 0 ? ` · ${n} 待核销` : ' · 已全核销'}
                   </option>
                 );
@@ -274,17 +289,30 @@ export default function Reconcile({ data }: { data: AppData }) {
         <div className="rec-hint muted small">
           账户当前余额 {fmtMoney(currentBalance, curCode)}
           {(() => {
-            const n = unclearedCount(txns, accountId);
+            const n = unclearedCount(allTxns, accountId);
             return n > 0 ? <> · {n} 笔待核销</> : <> · 已全部核销 ✓</>;
           })()}
+          {selAccount?.global && <> · 全局共享（流水来自各账本）</>}
           {lastRec && <> · 上次对账 {lastRec.statementDate}（{fmtMoney(lastRec.statementBalance, curCode)}）</>}
         </div>
       </div>
 
       <div className="card">
         <h3>
-          流水勾对 <span className="mini">{rows.length} 笔</span>
+          流水勾对 <span className="mini">{rows.length} 笔{bookFilter !== 'all' ? ` · 本账本已勾选 ${fmtMoney(filteredCheckedSum ?? 0, curCode)}` : ''}</span>
         </h3>
+        {rowBooks.length > 1 && (
+          <div className="rec-bookfilter">
+            <button className={`chip${bookFilter === 'all' ? ' on' : ''}`} onClick={() => setBookFilter('all')}>
+              全部账本
+            </button>
+            {rowBooks.map((bid) => (
+              <button key={bid} className={`chip${bookFilter === bid ? ' on' : ''}`} onClick={() => setBookFilter(bid)}>
+                {bookName(bid)}
+              </button>
+            ))}
+          </div>
+        )}
         {rows.length === 0 ? (
           <p className="muted">该账户暂无流水。</p>
         ) : (
@@ -293,7 +321,10 @@ export default function Reconcile({ data }: { data: AppData }) {
               <label className={`rec-row${checked.has(r.pid) ? ' on' : ''}`} key={r.pid}>
                 <input type="checkbox" checked={checked.has(r.pid)} onChange={() => toggle(r.pid)} />
                 <span className="rec-date">{r.date}</span>
-                <span className="rec-title">{r.title}</span>
+                <span className="rec-title">
+                  {r.title}
+                  {rowBooks.length > 1 && <span className="chip"> {bookName(r.bookId)}</span>}
+                </span>
                 <span className={`rec-amt ${r.amount < 0 ? 'neg' : 'pos'}`}>{fmtMoney(r.amount, curCode)}</span>
                 <button
                   className="del rec-del"
@@ -318,6 +349,7 @@ export default function Reconcile({ data }: { data: AppData }) {
               onClick={() => {
                 setAddOpen(true);
                 setADate(stmtDate);
+                setABook(selAccount?.global ? (books[0]?.id ?? '') : homeBookId);
                 setErr(null);
               }}
             >
@@ -326,6 +358,16 @@ export default function Reconcile({ data }: { data: AppData }) {
           ) : (
             <div className="rec-add-form">
               <div className="qgrid">
+                <label>
+                  归属账本
+                  <select value={aBook} onChange={(e) => setABook(e.target.value)} disabled={addBookOptions.length <= 1}>
+                    {addBookOptions.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label>
                   类型
                   <select value={aKind} onChange={(e) => setAKind(e.target.value as AddKind)}>

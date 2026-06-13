@@ -25,6 +25,7 @@ type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'reconcil
 /** 顶层导航：财务总表 / 全局设置 / 某账本 id。 */
 const OVERVIEW = 'all';
 const SETTINGS = '__settings__';
+const RECONCILE = '__reconcile__';
 
 export interface AppData {
   repo: Repository;
@@ -52,7 +53,6 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['txns', '流水'],
     ['budgets', '预算'],
     ['accounts', '账户'],
-    ['reconcile', '对账'],
   ],
   business: [
     ['dashboard', '总览'],
@@ -65,13 +65,11 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['txns', '流水'],
     ['budgets', '预算'],
     ['accounts', '账户'],
-    ['reconcile', '对账'],
   ],
   investment: [
     ['invest', '投资'],
     ['txns', '流水'],
     ['accounts', '账户'],
-    ['reconcile', '对账'],
   ],
 };
 
@@ -304,6 +302,9 @@ export default function App() {
           </>
         )}
 
+        <button className={`book settings-link${cur === RECONCILE ? ' on' : ''}`} onClick={() => setCur(RECONCILE)}>
+          ✓ 对账
+        </button>
         <button className={`book settings-link${cur === SETTINGS ? ' on' : ''}`} onClick={() => setCur(SETTINGS)}>
           ⚙ 设置
         </button>
@@ -322,6 +323,8 @@ export default function App() {
             usedCurrencies={new Set(accounts.map((a) => a.currency))}
             reload={() => loadFrom(repo)}
           />
+        ) : cur === RECONCILE ? (
+          <Reconcile repo={repo} accounts={accounts} allTxns={txns} books={books} reload={() => loadFrom(repo)} />
         ) : cur === OVERVIEW || !data ? (
           <OverviewAll books={books} accounts={accounts} txns={txns} settings={settings} convert={convert} onOpen={openBook} />
         ) : (
@@ -330,7 +333,7 @@ export default function App() {
               <div className="recon-banner">
                 <span>📋 本月对账日 {reconReminder} 临近，建议核对各账户余额。</span>
                 <div className="rb-actions">
-                  <button className="btn btn-primary rb-go" onClick={() => setView('reconcile')}>
+                  <button className="btn btn-primary rb-go" onClick={() => setCur(RECONCILE)}>
                     去对账
                   </button>
                   <button
@@ -397,7 +400,6 @@ export default function App() {
             {view === 'budgets' && <Budgets data={data} />}
             {view === 'invest' && <Invest data={data} />}
             {view === 'accounts' && <Accounts data={data} />}
-            {view === 'reconcile' && <Reconcile data={data} />}
             {view === 'customers' && <Customers data={data} />}
             {view === 'suppliers' && <Suppliers data={data} />}
             {view === 'orders' && <Orders data={data} />}

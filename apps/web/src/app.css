@@ -199,6 +199,9 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .chip.off { background: #eef1f5; color: var(--muted); }
 .chip.warn { background: var(--biz-50); color: var(--biz); }
 .chip.danger { background: #fdecec; color: var(--neg); }
+.rec-bookfilter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.rec-bookfilter .chip { cursor: pointer; border: 1px solid transparent; background: #eef1f5; color: var(--muted); }
+.rec-bookfilter .chip.on { background: var(--biz-50); color: var(--biz); border-color: var(--biz); }
 .recv-head { display: flex; align-items: center; justify-content: space-between; }
 .recv-sums { font-size: 13px; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
 .recv-sums .neg { color: var(--neg); font-weight: 600; }
