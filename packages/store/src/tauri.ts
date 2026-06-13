@@ -1,6 +1,6 @@
 import Database from '@tauri-apps/plugin-sql';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -19,6 +19,7 @@ import type {
   StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
+  StoredPluginDocument,
   StoredProduct,
   StoredPurchase,
   StoredReconciliation,
@@ -40,6 +41,7 @@ import {
   toInventoryMovement,
   toOrder,
   toOrderLine,
+  toPluginDocument,
   toPosting,
   toProduct,
   toPurchase,
@@ -59,6 +61,7 @@ import type {
   InventoryMovementRow,
   OrderLineRow,
   OrderRow,
+  PluginDocumentRow,
   PostingRow,
   ProductRow,
   PurchaseLineRow,
@@ -748,6 +751,48 @@ export class TauriSqlRepository implements Repository {
       [next.name, next.calcType, JSON.stringify(next.tiers), next.archived ? 1 : 0, next.updatedAt, id],
     );
     return (await this.getFeeDefinition(id))!;
+  }
+
+  // ---- 插件单据实例（插件地基 Step 1）----
+  async addPluginDocument(doc: PluginDocument): Promise<StoredPluginDocument> {
+    if (await this.exists('SELECT 1 FROM plugin_documents WHERE id = $1', [doc.id])) throw new Error(`插件单据已存在：${doc.id}`);
+    await this.assertBook(doc.bookId);
+    const ts = this.now();
+    await this.db.execute(
+      'INSERT INTO plugin_documents (id, book_id, plugin_id, doc_type, data, txn_ids, created_at, updated_at, deleted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)',
+      [doc.id, doc.bookId, doc.pluginId, doc.docType, JSON.stringify(doc.data), JSON.stringify(doc.txnIds), ts, ts],
+    );
+    return (await this.getPluginDocument(doc.id))!;
+  }
+
+  async getPluginDocument(id: string): Promise<StoredPluginDocument | null> {
+    const rows = await this.db.select<PluginDocumentRow[]>('SELECT * FROM plugin_documents WHERE id = $1 AND deleted = 0', [id]);
+    return rows[0] ? toPluginDocument(rows[0]) : null;
+  }
+
+  async listPluginDocuments(query: { bookId?: string; pluginId?: string; docType?: string } = {}): Promise<StoredPluginDocument[]> {
+    const cond = ['deleted = 0'];
+    const params: unknown[] = [];
+    if (query.bookId) {
+      params.push(query.bookId);
+      cond.push(`book_id = $${params.length}`);
+    }
+    if (query.pluginId) {
+      params.push(query.pluginId);
+      cond.push(`plugin_id = $${params.length}`);
+    }
+    if (query.docType) {
+      params.push(query.docType);
+      cond.push(`doc_type = $${params.length}`);
+    }
+    const rows = await this.db.select<PluginDocumentRow[]>(`SELECT * FROM plugin_documents WHERE ${cond.join(' AND ')}`, params);
+    return rows.map(toPluginDocument);
+  }
+
+  async removePluginDocument(id: string): Promise<void> {
+    const cur = await this.getPluginDocument(id);
+    if (!cur) throw new Error(`插件单据不存在：${id}`);
+    await this.db.execute('UPDATE plugin_documents SET deleted = 1, updated_at = $1 WHERE id = $2', [this.now(), id]);
   }
 
   // ---- 生意：代采采购单（C2d）----

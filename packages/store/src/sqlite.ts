@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -19,6 +19,7 @@ import type {
   StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
+  StoredPluginDocument,
   StoredProduct,
   StoredPurchase,
   StoredReconciliation,
@@ -40,6 +41,7 @@ import {
   toInventoryMovement,
   toOrder,
   toOrderLine,
+  toPluginDocument,
   toPosting,
   toProduct,
   toPurchase,
@@ -59,6 +61,7 @@ import type {
   InventoryMovementRow,
   OrderLineRow,
   OrderRow,
+  PluginDocumentRow,
   PostingRow,
   ProductRow,
   PurchaseLineRow,
@@ -759,6 +762,47 @@ export class SqliteRepository implements Repository {
       .prepare(`UPDATE fee_definitions SET name=?, calc_type=?, tiers=?, archived=?, updated_at=? WHERE id=?`)
       .run(next.name, next.calcType, JSON.stringify(next.tiers), next.archived ? 1 : 0, next.updatedAt, id);
     return (await this.getFeeDefinition(id))!;
+  }
+
+  // ---- 插件单据实例（插件地基 Step 1）----
+  async addPluginDocument(doc: PluginDocument): Promise<StoredPluginDocument> {
+    if (this.db.prepare('SELECT 1 FROM plugin_documents WHERE id = ?').get(doc.id)) throw new Error(`插件单据已存在：${doc.id}`);
+    this.assertBook(doc.bookId);
+    const ts = this.now();
+    this.db
+      .prepare(`INSERT INTO plugin_documents (id, book_id, plugin_id, doc_type, data, txn_ids, created_at, updated_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+      .run(doc.id, doc.bookId, doc.pluginId, doc.docType, JSON.stringify(doc.data), JSON.stringify(doc.txnIds), ts, ts);
+    return (await this.getPluginDocument(doc.id))!;
+  }
+
+  async getPluginDocument(id: string): Promise<StoredPluginDocument | null> {
+    const r = this.db.prepare('SELECT * FROM plugin_documents WHERE id = ? AND deleted = 0').get(id) as PluginDocumentRow | undefined;
+    return r ? toPluginDocument(r) : null;
+  }
+
+  async listPluginDocuments(query: { bookId?: string; pluginId?: string; docType?: string } = {}): Promise<StoredPluginDocument[]> {
+    const cond = ['deleted = 0'];
+    const params: string[] = [];
+    if (query.bookId) {
+      cond.push('book_id = ?');
+      params.push(query.bookId);
+    }
+    if (query.pluginId) {
+      cond.push('plugin_id = ?');
+      params.push(query.pluginId);
+    }
+    if (query.docType) {
+      cond.push('doc_type = ?');
+      params.push(query.docType);
+    }
+    const rows = this.db.prepare(`SELECT * FROM plugin_documents WHERE ${cond.join(' AND ')}`).all(...params) as unknown as PluginDocumentRow[];
+    return rows.map(toPluginDocument);
+  }
+
+  async removePluginDocument(id: string): Promise<void> {
+    const cur = await this.getPluginDocument(id);
+    if (!cur) throw new Error(`插件单据不存在：${id}`);
+    this.db.prepare('UPDATE plugin_documents SET deleted = 1, updated_at = ? WHERE id = ?').run(this.now(), id);
   }
 
   // ---- 生意：代采采购单（C2d）----

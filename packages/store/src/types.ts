@@ -1,4 +1,4 @@
-import type { Account, Book, Budget, Customer, FeeDefinition, FeeTier, InventoryMovement, Order, OrderStatus, Product, Purchase, PurchaseLine, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, FeeTier, InventoryMovement, Order, OrderStatus, PluginDocument, Product, Purchase, PurchaseLine, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 
 /** 每条记录都带的同步元数据，为将来的云同步预留。 */
 export interface SyncMeta {
@@ -21,6 +21,7 @@ export type StoredPurchase = Purchase & SyncMeta;
 export type StoredFeeDefinition = FeeDefinition & SyncMeta;
 export type StoredReconciliation = Reconciliation & SyncMeta;
 export type StoredInventoryMovement = InventoryMovement & SyncMeta;
+export type StoredPluginDocument = PluginDocument & SyncMeta;
 
 /**
  * 通用设置项（KV）。scope = 'app' 为应用级，或某账本 id 为账本级。
@@ -201,4 +202,11 @@ export interface Repository {
   setPostingsCleared(postingIds: string[], cleared: boolean): Promise<void>;
   addReconciliation(rec: Reconciliation): Promise<StoredReconciliation>;
   listReconciliations(query?: { bookId?: string; accountId?: string }): Promise<StoredReconciliation[]>;
+
+  // 插件单据实例（插件地基 Step 1）：声明式单据 → 平衡分录后存此。约束：必须挂在已存在账本上。
+  // removePluginDocument 软删（撤单时由编排层先反向 txnIds 再软删）。
+  addPluginDocument(doc: PluginDocument): Promise<StoredPluginDocument>;
+  listPluginDocuments(query?: { bookId?: string; pluginId?: string; docType?: string }): Promise<StoredPluginDocument[]>;
+  getPluginDocument(id: string): Promise<StoredPluginDocument | null>;
+  removePluginDocument(id: string): Promise<void>;
 }

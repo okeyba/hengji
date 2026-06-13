@@ -25,6 +25,7 @@
  * - m14：账户全局化。accounts.global 标记真金白银账户全账本共用（现金/银行/支付宝…）；
  *   既有账户默认 0（账本专属、行为不变）；纯新增列。全局账户余额归全局资金池、对账按账户跨账本。
  * - m15：额外费用+公式引擎（C2 Step 4）。fee_definitions 表（账本级声明式阶梯费用）+ order_lines.fee_ids 列；纯新增。
+ * - m16：插件地基（north-star Step 1）。plugin_documents 表（声明式单据实例：data + txn_ids JSON）；纯新增。
  */
 
 export interface SqlRunner {
@@ -331,7 +332,24 @@ const M15: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_fee_definitions_book ON fee_definitions(book_id)`,
 ];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15];
+// m16：插件地基（north-star Step 1）。plugin_documents 存声明式单据实例（data 字段值 JSON +
+// txn_ids 生成的交易 JSON，作废时反向）。单据类型(DocumentType)此期硬编码在 web、不入库。纯新增表。
+const M16: string[] = [
+  `CREATE TABLE IF NOT EXISTS plugin_documents (
+    id TEXT PRIMARY KEY,
+    book_id TEXT NOT NULL,
+    plugin_id TEXT NOT NULL,
+    doc_type TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    txn_ids TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_plugin_documents_book ON plugin_documents(book_id)`,
+];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

@@ -1,5 +1,5 @@
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -18,6 +18,7 @@ import type {
   StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
+  StoredPluginDocument,
   StoredProduct,
   StoredPurchase,
   StoredReconciliation,
@@ -57,6 +58,7 @@ export class InMemoryRepository implements Repository {
   private readonly settings = new Map<string, StoredSetting>();
   private readonly reconciliations = new Map<string, StoredReconciliation>();
   private readonly inventoryMovements = new Map<string, StoredInventoryMovement>();
+  private readonly pluginDocuments = new Map<string, StoredPluginDocument>();
   private readonly now: Clock;
 
   constructor(opts: { now?: Clock } = {}) {
@@ -517,6 +519,39 @@ export class InMemoryRepository implements Repository {
     const updated: StoredFeeDefinition = { ...f, ...clone(patch), updatedAt: this.now() };
     this.feeDefinitions.set(id, updated);
     return clone(updated);
+  }
+
+  // ---- 插件单据实例（插件地基 Step 1）----
+  async addPluginDocument(doc: PluginDocument): Promise<StoredPluginDocument> {
+    if (this.pluginDocuments.has(doc.id)) throw new Error(`插件单据已存在：${doc.id}`);
+    this.liveBook(doc.bookId);
+    const ts = this.now();
+    const stored: StoredPluginDocument = { ...clone(doc), createdAt: ts, updatedAt: ts, deleted: false };
+    this.pluginDocuments.set(doc.id, stored);
+    return clone(stored);
+  }
+
+  async listPluginDocuments(query: { bookId?: string; pluginId?: string; docType?: string } = {}): Promise<StoredPluginDocument[]> {
+    const out: StoredPluginDocument[] = [];
+    for (const d of this.pluginDocuments.values()) {
+      if (d.deleted) continue;
+      if (query.bookId && d.bookId !== query.bookId) continue;
+      if (query.pluginId && d.pluginId !== query.pluginId) continue;
+      if (query.docType && d.docType !== query.docType) continue;
+      out.push(clone(d));
+    }
+    return out;
+  }
+
+  async getPluginDocument(id: string): Promise<StoredPluginDocument | null> {
+    const d = this.pluginDocuments.get(id);
+    return d && !d.deleted ? clone(d) : null;
+  }
+
+  async removePluginDocument(id: string): Promise<void> {
+    const d = this.pluginDocuments.get(id);
+    if (!d || d.deleted) throw new Error(`插件单据不存在：${id}`);
+    this.pluginDocuments.set(id, { ...d, deleted: true, updatedAt: this.now() });
   }
 
   // ---- 生意：库存出入库 ----

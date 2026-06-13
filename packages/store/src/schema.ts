@@ -7,6 +7,7 @@ import type {
   StoredFeeDefinition,
   StoredInventoryMovement,
   StoredOrder,
+  StoredPluginDocument,
   StoredProduct,
   StoredPurchase,
   StoredSupplier,
@@ -322,6 +323,42 @@ export function toFeeDefinition(r: FeeDefinitionRow): StoredFeeDefinition {
     calcType: r.calc_type as FeeDefinition['calcType'],
     tiers: parseTiers(r.tiers),
     archived: r.archived !== 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deleted: r.deleted !== 0,
+  };
+}
+
+export interface PluginDocumentRow {
+  id: string;
+  book_id: string;
+  plugin_id: string;
+  doc_type: string;
+  data: string;
+  txn_ids: string;
+  created_at: string;
+  updated_at: string;
+  deleted: number;
+}
+
+/** 安全解析单据字段值 JSON：坏数据降级为空对象。 */
+function parseDocData(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function toPluginDocument(r: PluginDocumentRow): StoredPluginDocument {
+  return {
+    id: r.id,
+    bookId: r.book_id,
+    pluginId: r.plugin_id,
+    docType: r.doc_type,
+    data: parseDocData(r.data),
+    txnIds: parseTags(r.txn_ids ?? '[]'),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     deleted: r.deleted !== 0,

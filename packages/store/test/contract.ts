@@ -668,6 +668,35 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
     });
   });
 
+  describe(`${name} · 插件单据（插件地基）`, () => {
+    it('add/get/list 过滤 + data/txnIds JSON 往返 + 账本校验 + removePluginDocument 软删', async () => {
+      const repo = await seed(makeRepo(fakeClock()));
+      const d = await repo.addPluginDocument({
+        id: 'd1', bookId: B2, pluginId: 'builtin', docType: 'platformSale',
+        data: { shop: '拼多多', lines: [{ name: '数码配件', qty: 1, unitPrice: 100000 }] },
+        txnIds: ['t1', 't2'],
+      });
+      expect(d.deleted).toBe(false);
+      const got = (await repo.getPluginDocument('d1'))!;
+      expect(got.data).toEqual({ shop: '拼多多', lines: [{ name: '数码配件', qty: 1, unitPrice: 100000 }] });
+      expect(got.txnIds).toEqual(['t1', 't2']);
+      // 账本校验
+      await expect(repo.addPluginDocument({ id: 'dX', bookId: 'ghost', pluginId: 'builtin', docType: 'platformSale', data: {}, txnIds: [] })).rejects.toThrow();
+      // list 过滤：bookId / pluginId / docType
+      await repo.addPluginDocument({ id: 'd2', bookId: B2, pluginId: 'builtin', docType: 'other', data: {}, txnIds: [] });
+      await repo.addPluginDocument({ id: 'd3', bookId: B1, pluginId: 'builtin', docType: 'platformSale', data: {}, txnIds: [] });
+      expect((await repo.listPluginDocuments({ bookId: B2 })).map((x) => x.id).sort()).toEqual(['d1', 'd2']);
+      expect((await repo.listPluginDocuments({ docType: 'platformSale' })).map((x) => x.id).sort()).toEqual(['d1', 'd3']);
+      expect((await repo.listPluginDocuments({ bookId: B2, docType: 'platformSale' })).map((x) => x.id)).toEqual(['d1']);
+      expect((await repo.listPluginDocuments({ pluginId: 'builtin' })).length).toBe(3);
+      // removePluginDocument 软删：get 返 null、list 排除、重复删抛错
+      await repo.removePluginDocument('d1');
+      expect(await repo.getPluginDocument('d1')).toBeNull();
+      expect((await repo.listPluginDocuments({ bookId: B2 })).map((x) => x.id)).toEqual(['d2']);
+      await expect(repo.removePluginDocument('d1')).rejects.toThrow();
+    });
+  });
+
   describe(`${name} · 设置（KV）`, () => {
     it('set/get + upsert 覆盖 + scope 隔离 + list 过滤', async () => {
       const repo = makeRepo(fakeClock());
