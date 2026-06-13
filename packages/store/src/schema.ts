@@ -1,4 +1,4 @@
-import type { Account, Book, InventoryKind, OrderLine, Posting, PurchaseLine, SettlementDirection, CounterpartyType, OrderStatus } from '@app/core';
+import type { Account, Book, InventoryKind, OrderLine, Posting, PurchaseKind, PurchaseLine, SettlementDirection, CounterpartyType, OrderStatus } from '@app/core';
 import type {
   StoredAccount,
   StoredBook,
@@ -123,7 +123,10 @@ export interface PurchaseRow {
   id: string;
   book_id: string;
   supplier_id: string;
+  /** 关联订单；无订单（stock/expense）存 ''（列 NOT NULL），映射时 ''→null */
   order_id: string;
+  kind: string;
+  dest_account_id: string | null;
   date: string;
   pay_mode: string;
   note: string;
@@ -309,7 +312,9 @@ export function toPurchase(r: PurchaseRow, lines: PurchaseLine[]): StoredPurchas
     id: r.id,
     bookId: r.book_id,
     supplierId: r.supplier_id,
-    orderId: r.order_id,
+    kind: (r.kind || 'dropship') as PurchaseKind,
+    orderId: r.order_id === '' ? null : r.order_id,
+    destAccountId: r.dest_account_id,
     date: r.date,
     payMode: r.pay_mode === 'credit' ? 'credit' : 'cash',
     note: r.note,

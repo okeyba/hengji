@@ -500,7 +500,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
         lines: [{ id: 'l1', orderId: 'o1', name: '代采件', qty: 2, unitPrice: 9000, productId: null }],
       });
       const p = await repo.addPurchase({
-        id: 'pu1', bookId: B2, supplierId: 'su1', orderId: 'o1', date: '2026-06-10',
+        id: 'pu1', bookId: B2, supplierId: 'su1', kind: 'dropship', orderId: 'o1', destAccountId: null, date: '2026-06-10',
         payMode: 'credit', note: '为此单采购', txnId: null,
         lines: [{ id: 'pl1', purchaseId: 'pu1', name: '代采件', qty: 2, unitCost: 5000, productId: null }],
       });
@@ -508,12 +508,29 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
       const got = (await repo.getPurchase('pu1'))!;
       expect(got.lines[0]!.unitCost).toBe(5000);
       expect(got.payMode).toBe('credit');
+      expect(got.kind).toBe('dropship');
       // 跨账本供应商被拒
       await expect(
-        repo.addPurchase({ id: 'puX', bookId: B1, supplierId: 'su1', orderId: 'o1', date: '2026-06-10', payMode: 'cash', note: '', txnId: null, lines: [] }),
+        repo.addPurchase({ id: 'puX', bookId: B1, supplierId: 'su1', kind: 'dropship', orderId: 'o1', destAccountId: null, date: '2026-06-10', payMode: 'cash', note: '', txnId: null, lines: [] }),
       ).rejects.toThrow(/同账本/);
-      expect((await repo.listPurchases({ orderId: 'o1' })).map((x) => x.id)).toEqual(['pu1']);
-      expect((await repo.listPurchases({ supplierId: 'su1' })).length).toBe(1);
+      // stock 采购无订单（orderId=null，'' 哨兵往返）+ kind/dest 往返
+      const ps = await repo.addPurchase({
+        id: 'pu2', bookId: B2, supplierId: 'su1', kind: 'stock', orderId: null, destAccountId: null, date: '2026-06-11',
+        payMode: 'cash', note: '补库存', txnId: 't9',
+        lines: [{ id: 'pl9', purchaseId: 'pu2', name: '货', qty: 3, unitCost: 4000, productId: null }],
+      });
+      expect(ps.orderId).toBeNull();
+      expect((await repo.getPurchase('pu2'))!.orderId).toBeNull();
+      expect((await repo.getPurchase('pu2'))!.kind).toBe('stock');
+      expect((await repo.listPurchases({ orderId: 'o1' })).map((x) => x.id)).toEqual(['pu1']); // 无订单的 pu2 不混入
+      expect((await repo.listPurchases({ supplierId: 'su1' })).map((x) => x.id).sort()).toEqual(['pu1', 'pu2']);
+      // expense 采购：dest 费用科目往返
+      const pe = await repo.addPurchase({
+        id: 'pu3', bookId: B2, supplierId: '', kind: 'expense', orderId: null, destAccountId: 'b2supply', date: '2026-06-11',
+        payMode: 'cash', note: '运费', txnId: 't8', lines: [{ id: 'pl8', purchaseId: 'pu3', name: '运费', qty: 1, unitCost: 5000, productId: null }],
+      });
+      expect(pe.destAccountId).toBe('b2supply');
+      expect((await repo.getPurchase('pu3'))!.destAccountId).toBe('b2supply');
     });
 
     it('采购单草稿态：空供应商可建 → updatePurchase 补供应商/采购价/记账确认；removePurchase 作废（C2 重构）', async () => {
@@ -527,7 +544,7 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
       });
       // 草稿：supplierId='' / txnId=null，跳过供应商校验
       await repo.addPurchase({
-        id: 'pu1', bookId: B2, supplierId: '', orderId: 'o1', date: '2026-06-10',
+        id: 'pu1', bookId: B2, supplierId: '', kind: 'dropship', orderId: 'o1', destAccountId: null, date: '2026-06-10',
         payMode: 'credit', note: '', txnId: null,
         lines: [{ id: 'pl1', purchaseId: 'pu1', name: '货', qty: 5, unitCost: 6000, productId: 'p1' }],
       });

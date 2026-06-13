@@ -19,6 +19,9 @@
  * - m12：C2 模型重构——统一库存模型。products.quote_only 列（纯报价/服务行标记）。
  *   旧 is_stock/dropship 列保留为死列（不 DROP，避免迁移风险），代码改读 quote_only。
  *   采购单草稿态复用既有 nullable txn_id（=草稿）+ 空 supplier_id，无需新列。
+ * - m13：采购一等公民（Step 3）。purchases 加 kind（stock/dropship/expense，默认 dropship）
+ *   + dest_account_id（费用采购的目标费用科目）。order_id 改"可空"用 '' 哨兵（列保持 NOT NULL，
+ *   stock/expense 无订单存 ''、映射时 ''↔null），避免重建表/触发 purchase_lines 级联删除。纯新增列。
  */
 
 export interface SqlRunner {
@@ -296,7 +299,14 @@ const M11: string[] = [
 // 旧 is_stock/dropship 保留为死列（不读不 DROP）。既有商品 quote_only 默认 0（=库存追踪）。
 const M12: string[] = [`ALTER TABLE products ADD COLUMN quote_only INTEGER NOT NULL DEFAULT 0`];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12];
+// m13：采购一等公民（Step 3）。kind 默认 'dropship'（既有采购单都是代采、正确）；dest_account_id 费用采购目标科目。
+// order_id 仍 NOT NULL，无订单（stock/expense）存 '' 哨兵、映射 ''↔null——避免重建表触发 purchase_lines 级联删除。
+const M13: string[] = [
+  `ALTER TABLE purchases ADD COLUMN kind TEXT NOT NULL DEFAULT 'dropship'`,
+  `ALTER TABLE purchases ADD COLUMN dest_account_id TEXT`,
+];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

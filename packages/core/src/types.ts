@@ -194,19 +194,31 @@ export interface PurchaseLine {
 }
 
 /**
- * 采购单（C2 模型重构）：「为此单采购」——一张采购单对应一张订单（orderId）。
- * 开单时若商品在手不足，自动生成**草稿态**采购单（`supplierId=''`、`txnId=null`、行单价 = 进价预填）；
- * 确认采购时补供应商、采购价并记账（借代采在途/贷应付 or 现金）、写 `txnId`。
- * `txnId === null` 即草稿（尚未记账，可作废）；`txnId !== null` 即已确认。
- * 成本计入「代采在途成本」holding 资产、订单完成时结转 COGS（不过库存均价池）。CNY 本位（外币采购后置）。
+ * 采购去向（C2 模型重构 Step 3）：
+ * - `stock`：补库存进货——借库存商品/贷（现金 or 应付），进移动加权均价池（无关联订单）。
+ * - `dropship`：为某订单代采——借代采在途/贷（现金 or 应付），挂 `orderId`、订单完成时结转 COGS（不过库存池）。
+ * - `expense`：费用采购——借目标费用科目（`destAccountId`）/贷（现金 or 应付），不进库存（无关联订单）。
+ */
+export type PurchaseKind = 'stock' | 'dropship' | 'expense';
+
+/**
+ * 采购单（C2 模型重构）：采购一等公民。`kind` 决定去向（见 PurchaseKind）。
+ * dropship 关联订单（`orderId`）；stock/expense 无订单（`orderId = null`）。
+ * 代采可先生成**草稿态**（`supplierId=''`、`txnId=null`、行单价=进价预填，开单不足时自动生成），
+ * 确认时补供应商、采购价并记账、写 `txnId`；`txnId === null` 即草稿（可作废）、`!== null` 即已确认。
+ * CNY 本位（外币采购后置）。
  */
 export interface Purchase {
   id: string;
   bookId: string;
-  /** 供应商 id；草稿态为 '' （确认时补） */
+  /** 供应商 id；草稿态 / 现结无供应商时为 '' */
   supplierId: string;
-  /** 关联订单（为此单采购） */
-  orderId: string;
+  /** 采购去向 */
+  kind: PurchaseKind;
+  /** 关联订单（仅 dropship 为此单采购）；stock/expense 为 null */
+  orderId: string | null;
+  /** 费用采购的目标费用科目 id（仅 kind=expense）；其余为 null */
+  destAccountId: string | null;
   date: string;
   /** 付款方式：cash=现结 / credit=赊账（记应付账款/供应商） */
   payMode: 'cash' | 'credit';

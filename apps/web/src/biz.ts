@@ -260,7 +260,7 @@ export async function saveOrder(
   if (shortfalls.length > 0) {
     const purchaseId = genId();
     const draftLines: PurchaseLine[] = shortfalls.map((s) => ({ id: genId(), purchaseId, productId: s.productId, name: s.name, qty: s.missing, unitCost: s.costPrice }));
-    await repo.addPurchase({ id: purchaseId, bookId: book.id, supplierId: '', orderId, date: opts.date, payMode: 'credit', note: '', txnId: null, lines: draftLines });
+    await repo.addPurchase({ id: purchaseId, bookId: book.id, supplierId: '', kind: 'dropship', orderId, destAccountId: null, date: opts.date, payMode: 'credit', note: '', txnId: null, lines: draftLines });
   }
 }
 
@@ -558,6 +558,30 @@ export async function recordStockIn(
     txnId: entry.id,
     note: opts.note,
   });
+  await recordStockPurchase(repo, book, { productId: opts.productId, qty: opts.qty, unitCost: opts.unitCost, date: opts.date, payMode: 'cash', supplierId: '', txnId: entry.id, note: opts.note });
+}
+
+/** 记一条「补库存进货」的采购单（kind=stock，无订单），与进货分录/流水共用 txnId，供采购页统一查看。 */
+async function recordStockPurchase(
+  repo: Repository,
+  book: StoredBook,
+  opts: { productId: string; qty: number; unitCost: number; date: string; payMode: 'cash' | 'credit'; supplierId: string; txnId: string; note: string },
+): Promise<void> {
+  const product = await repo.getProduct(opts.productId);
+  const purchaseId = genId();
+  await repo.addPurchase({
+    id: purchaseId,
+    bookId: book.id,
+    supplierId: opts.supplierId,
+    kind: 'stock',
+    orderId: null,
+    destAccountId: null,
+    date: opts.date,
+    payMode: opts.payMode,
+    note: opts.note,
+    txnId: opts.txnId,
+    lines: [{ id: genId(), purchaseId, productId: opts.productId, name: product?.name ?? '进货', qty: opts.qty, unitCost: opts.unitCost }],
+  });
 }
 
 // —— C2 应付（供应商赊购 + 还款）——
@@ -706,6 +730,7 @@ export async function recordCreditStockIn(
     txnId: entry.id,
     note: opts.note,
   });
+  await recordStockPurchase(repo, book, { productId: opts.productId, qty: opts.qty, unitCost: opts.unitCost, date: opts.date, payMode: 'credit', supplierId: opts.supplier.id, txnId: entry.id, note: opts.note });
 }
 
 /** 付供应商货款：钱从付款资产账户(CNY)转入 应付账款/供应商（冲减欠款），并落 Settlement(out/supplier) 记录。 */
@@ -776,9 +801,11 @@ export async function confirmOrderPurchase(
   }
   await repo.addTransaction(txn);
   await repo.updatePurchase(opts.purchase.id, { supplierId: opts.supplier.id, date: opts.date, payMode: opts.payMode, note: opts.note, txnId: txn.id, lines });
-  const order = await repo.getOrder(opts.purchase.orderId);
-  if (order && order.status === 'pending_purchase') {
-    await repo.updateOrder(order.id, { status: 'pending_ship' });
+  if (opts.purchase.orderId) {
+    const order = await repo.getOrder(opts.purchase.orderId);
+    if (order && order.status === 'pending_purchase') {
+      await repo.updateOrder(order.id, { status: 'pending_ship' });
+    }
   }
 }
 
@@ -788,8 +815,63 @@ export async function confirmOrderPurchase(
  */
 export async function voidDraftPurchase(repo: Repository, book: StoredBook, purchase: StoredPurchase): Promise<void> {
   await repo.removePurchase(purchase.id);
-  const order = await repo.getOrder(purchase.orderId);
-  if (order && order.status === 'pending_purchase') {
-    await repo.updateOrder(order.id, { status: 'pending_ship' });
+  if (purchase.orderId) {
+    const order = await repo.getOrder(purchase.orderId);
+    if (order && order.status === 'pending_purchase') {
+      await repo.updateOrder(order.id, { status: 'pending_ship' });
+    }
   }
+}
+
+/**
+ * 费用采购（C2 模型重构 Step 3）：买入直接计入费用的东西（运费 / 办公用品等），不进库存、不挂订单。
+ * 借目标费用科目 / 贷（现结=付款资产账户；赊账=应付账款/供应商）。产出 kind='expense' 采购单，采购页可见。
+ */
+export async function recordExpensePurchase(
+  repo: Repository,
+  book: StoredBook,
+  opts: {
+    destAccountId: string;
+    amount: number;
+    description: string;
+    date: string;
+    payMode: 'cash' | 'credit';
+    payAccountId?: string;
+    supplier?: Supplier;
+    note: string;
+  },
+): Promise<void> {
+  if (opts.amount <= 0) throw new Error('采购金额需大于 0');
+  let supplierId = '';
+  let txn;
+  if (opts.payMode === 'credit') {
+    if (!opts.supplier) throw new Error('赊账采购需选供应商');
+    supplierId = opts.supplier.id;
+    const apId = await ensurePayableAccount(repo, book, opts.supplier, 'CNY');
+    txn = expandEntry(
+      { kind: 'expense', bookId: book.id, date: opts.date, amount: opts.amount, currency: 'CNY', accountId: apId, categoryId: opts.destAccountId, payee: opts.supplier.name, note: opts.description },
+      genId,
+    );
+  } else {
+    if (!opts.payAccountId) throw new Error('现结采购需选付款账户');
+    txn = expandEntry(
+      { kind: 'expense', bookId: book.id, date: opts.date, amount: opts.amount, currency: 'CNY', accountId: opts.payAccountId, categoryId: opts.destAccountId, payee: '采购', note: opts.description },
+      genId,
+    );
+  }
+  await repo.addTransaction(txn);
+  const purchaseId = genId();
+  await repo.addPurchase({
+    id: purchaseId,
+    bookId: book.id,
+    supplierId,
+    kind: 'expense',
+    orderId: null,
+    destAccountId: opts.destAccountId,
+    date: opts.date,
+    payMode: opts.payMode,
+    note: opts.note,
+    txnId: txn.id,
+    lines: [{ id: genId(), purchaseId, productId: null, name: opts.description, qty: 1, unitCost: opts.amount }],
+  });
 }

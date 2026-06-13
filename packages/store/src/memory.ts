@@ -401,9 +401,12 @@ export class InMemoryRepository implements Repository {
       const sup = this.liveSupplier(purchase.supplierId);
       if (sup.bookId !== purchase.bookId) throw new Error('采购单供应商必须与采购单同账本');
     }
-    const o = this.orders.get(purchase.orderId);
-    if (!o || o.deleted) throw new Error(`关联订单不存在：${purchase.orderId}`);
-    if (o.bookId !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    // dropship 关联订单（校验同账本）；stock/expense 无订单（orderId=null）。
+    if (purchase.orderId) {
+      const o = this.orders.get(purchase.orderId);
+      if (!o || o.deleted) throw new Error(`关联订单不存在：${purchase.orderId}`);
+      if (o.bookId !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    }
     const ts = this.now();
     const stored: StoredPurchase = { ...clone(purchase), createdAt: ts, updatedAt: ts, deleted: false };
     this.purchases.set(purchase.id, stored);

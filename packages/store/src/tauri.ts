@@ -722,14 +722,17 @@ export class TauriSqlRepository implements Repository {
     if (purchase.supplierId !== '' && (await this.supplierBookId(purchase.supplierId)) !== purchase.bookId) {
       throw new Error('采购单供应商必须与采购单同账本');
     }
-    const orows = await this.db.select<Array<{ book_id: string }>>('SELECT book_id FROM orders WHERE id = $1 AND deleted = 0', [purchase.orderId]);
-    if (!orows[0]) throw new Error(`关联订单不存在：${purchase.orderId}`);
-    if (orows[0].book_id !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    // dropship 关联订单（校验同账本）；stock/expense 无订单（orderId=null）。
+    if (purchase.orderId) {
+      const orows = await this.db.select<Array<{ book_id: string }>>('SELECT book_id FROM orders WHERE id = $1 AND deleted = 0', [purchase.orderId]);
+      if (!orows[0]) throw new Error(`关联订单不存在：${purchase.orderId}`);
+      if (orows[0].book_id !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
+    }
     const ts = this.now();
     await this.db.execute(
-      `INSERT INTO purchases (id, book_id, supplier_id, order_id, date, pay_mode, note, txn_id, created_at, updated_at, deleted)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
-      [purchase.id, purchase.bookId, purchase.supplierId, purchase.orderId, purchase.date, purchase.payMode, purchase.note, purchase.txnId, ts, ts],
+      `INSERT INTO purchases (id, book_id, supplier_id, kind, order_id, dest_account_id, date, pay_mode, note, txn_id, created_at, updated_at, deleted)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)`,
+      [purchase.id, purchase.bookId, purchase.supplierId, purchase.kind, purchase.orderId ?? '', purchase.destAccountId, purchase.date, purchase.payMode, purchase.note, purchase.txnId, ts, ts],
     );
     await this.insertPurchaseLines(purchase.id, purchase.lines);
     return (await this.getPurchase(purchase.id))!;

@@ -112,11 +112,11 @@ export default function Orders({ data }: { data: AppData }) {
     }
     return m;
   }, [movements]);
-  // 每单代采成本（人民币）= 该单各「已确认」采购单总额之和（草稿单 txnId=null、未记账、不计成本）。
+  // 每单代采成本（人民币）= 该单各「已确认代采」采购单总额之和（草稿 txnId=null 不计；stock/expense 非本单代采）。
   const dropshipCostByOrder = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of purchases) {
-      if (!p.txnId) continue;
+      if (!p.txnId || p.kind !== 'dropship' || !p.orderId) continue;
       m.set(p.orderId, (m.get(p.orderId) ?? 0) + purchaseTotal(p.lines));
     }
     return m;
@@ -150,7 +150,7 @@ export default function Orders({ data }: { data: AppData }) {
       prodCost.set(mv.productId, (prodCost.get(mv.productId) ?? 0) + Math.round(-mv.qty * mv.unitCost));
     }
     for (const p of purchases) {
-      if (!p.txnId || !completedIds.has(p.orderId)) continue; // 已确认采购 + 已完成订单：采购行成本按商品
+      if (!p.txnId || p.kind !== 'dropship' || !p.orderId || !completedIds.has(p.orderId)) continue; // 已确认代采 + 已完成订单：采购行成本按商品
       for (const l of p.lines) {
         if (!l.productId) continue;
         prodCost.set(l.productId, (prodCost.get(l.productId) ?? 0) + Math.round(l.qty * l.unitCost));

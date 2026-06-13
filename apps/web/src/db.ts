@@ -174,6 +174,12 @@ async function bootstrapDemo(): Promise<Repository> {
   );
   await repo.addTransaction(apBuy);
   await repo.addInventoryMovement({ id: genId(), bookId: biz.book.id, productId: prodB, date: daysAgo(10), kind: 'in', qty: 30, unitCost: toMinor(18), orderId: null, txnId: apBuy.id, note: '赊购' });
+  // 采购单记录（Step 3 采购一等公民）——赊购入库即一张 kind=stock 采购单，采购页可见。
+  const apBuyPurId = genId();
+  await repo.addPurchase({
+    id: apBuyPurId, bookId: biz.book.id, supplierId: supId, kind: 'stock', orderId: null, destAccountId: null, date: daysAgo(10), payMode: 'credit', note: '赊购B型配件', txnId: apBuy.id,
+    lines: [{ id: genId(), purchaseId: apBuyPurId, name: 'B型配件', qty: 30, unitCost: toMinor(18), productId: prodB }],
+  });
   // 盘点调整（C2 模型重构 Step 2）——展示「库存损溢」：B型配件盘点损耗 2 个，按均价 ¥19.25 计入库存损溢（借库存损溢/贷库存商品）。
   const lossGainId = genId();
   await repo.addAccount({ id: lossGainId, bookId: biz.book.id, name: '库存损溢', type: 'income', parentId: null, currency: 'CNY', archived: false });
@@ -194,6 +200,12 @@ async function bootstrapDemo(): Promise<Repository> {
     genId,
   );
   await repo.addTransaction(ap2Buy);
+  // 采购单记录（Step 3）——赊购包材是一张 kind=expense 费用采购（去向＝运费杂费），采购页可见。
+  const ap2PurId = genId();
+  await repo.addPurchase({
+    id: ap2PurId, bookId: biz.book.id, supplierId: sup2Id, kind: 'expense', orderId: null, destAccountId: biz.byName('运费杂费'), date: daysAgo(40), payMode: 'credit', note: '赊购包材', txnId: ap2Buy.id,
+    lines: [{ id: genId(), purchaseId: ap2PurId, name: '包材', qty: 1, unitCost: toMinor(800), productId: null }],
+  });
   // 营业成本科目 + 出库结转助手（订单完成时库存品按出库时点均价结转 COGS + 记 out 流水）
   const cogsAcctId = genId();
   await repo.addAccount({ id: cogsAcctId, bookId: biz.book.id, name: '营业成本', type: 'expense', parentId: null, currency: 'CNY', archived: false });
@@ -235,7 +247,7 @@ async function bootstrapDemo(): Promise<Repository> {
   // 开单时在手 0 → 自动生成草稿采购单（缺 10 个，单价预填进价 ¥60，无供应商/未记账，待「为此单采购」确认）
   const dropPurId = genId();
   await repo.addPurchase({
-    id: dropPurId, bookId: biz.book.id, supplierId: '', orderId: dropOrderId, date: daysAgo(1), payMode: 'credit', note: '', txnId: null,
+    id: dropPurId, bookId: biz.book.id, supplierId: '', kind: 'dropship', orderId: dropOrderId, destAccountId: null, date: daysAgo(1), payMode: 'credit', note: '', txnId: null,
     lines: [{ id: genId(), purchaseId: dropPurId, name: '定制礼盒', qty: 10, unitCost: toMinor(60), productId: prodDrop }],
   });
 
