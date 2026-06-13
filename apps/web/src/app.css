@@ -200,8 +200,11 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .chip.warn { background: var(--biz-50); color: var(--biz); }
 .chip.danger { background: #fdecec; color: var(--neg); }
 .rec-bookfilter { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
-.rec-bookfilter .chip { cursor: pointer; border: 1px solid transparent; background: #eef1f5; color: var(--muted); }
-.rec-bookfilter .chip.on { background: var(--biz-50); color: var(--biz); border-color: var(--biz); }
+.rec-bookfilter .chip, .ord-line-fees .chip { cursor: pointer; border: 1px solid transparent; background: #eef1f5; color: var(--muted); }
+.rec-bookfilter .chip.on, .ord-line-fees .chip.on { background: var(--biz-50); color: var(--biz); border-color: var(--biz); }
+.ord-line-block { margin-bottom: 8px; }
+.ord-line-fees { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0 0 4px; }
+.tier-f { flex: 1; min-width: 120px; }
 .recv-head { display: flex; align-items: center; justify-content: space-between; }
 .recv-sums { font-size: 13px; display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
 .recv-sums .neg { color: var(--neg); font-weight: 600; }

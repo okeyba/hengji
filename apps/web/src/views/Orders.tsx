@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { agingBuckets, convertAmount, fromMinor, orderTotal, purchaseTotal, toMinor } from '@app/core';
-import type { OrderPaymentStatus, OrderStatus } from '@app/core';
-import type { StoredCustomer, StoredInventoryMovement, StoredOrder, StoredProduct, StoredPurchase, StoredSettlement, StoredSupplier } from '@app/store';
+import { agingBuckets, computeFees, convertAmount, feesTotal, fromMinor, orderTotal, purchaseTotal, toMinor } from '@app/core';
+import type { FeeLine, OrderPaymentStatus, OrderStatus } from '@app/core';
+import type { StoredCustomer, StoredFeeDefinition, StoredInventoryMovement, StoredOrder, StoredProduct, StoredPurchase, StoredSettlement, StoredSupplier } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
 import { currencyDef, currencyList, fmtMoney, todayISO } from '../format';
-import { completeOrder, confirmOrderPurchase, customerOrderStatus, orderShortfalls, receivableSummary, recordCollection, saveOrder, voidDraftPurchase } from '../biz';
+import { completeOrder, confirmOrderPurchase, customerOrderStatus, orderFees, orderGrossTotal, orderShortfalls, receivableSummary, recordCollection, saveOrder, voidDraftPurchase } from '../biz';
 
 const STATUS: Record<OrderStatus, { label: string; cls: string }> = {
   pending_purchase: { label: '待采购', cls: '' },
@@ -21,9 +21,10 @@ interface LineDraft {
   name: string;
   qty: string;
   price: string;
+  feeIds: string[];
 }
 
-const emptyLine = (): LineDraft => ({ key: genId(), productId: '', name: '', qty: '1', price: '' });
+const emptyLine = (): LineDraft => ({ key: genId(), productId: '', name: '', qty: '1', price: '', feeIds: [] });
 
 export default function Orders({ data }: { data: AppData }) {
   const { repo, book, accounts, txns, reload, convert, mcEnabled } = data;
@@ -34,6 +35,7 @@ export default function Orders({ data }: { data: AppData }) {
   const [settlements, setSettlements] = useState<StoredSettlement[]>([]);
   const [movements, setMovements] = useState<StoredInventoryMovement[]>([]);
   const [purchases, setPurchases] = useState<StoredPurchase[]>([]);
+  const [feeDefs, setFeeDefs] = useState<StoredFeeDefinition[]>([]);
   const [err, setErr] = useState<string | null>(null);
 
   // 新建订单表单
@@ -58,7 +60,7 @@ export default function Orders({ data }: { data: AppData }) {
   const [pCosts, setPCosts] = useState<Record<string, string>>({});
 
   async function refresh(): Promise<void> {
-    const [cs, sup, os, ps, ss, ms, pu] = await Promise.all([
+    const [cs, sup, os, ps, ss, ms, pu, fd] = await Promise.all([
       repo.listCustomers({ bookId: book.id, includeArchived: true }),
       repo.listSuppliers({ bookId: book.id }),
       repo.listOrders({ bookId: book.id }),
@@ -66,6 +68,7 @@ export default function Orders({ data }: { data: AppData }) {
       repo.listSettlements({ bookId: book.id }),
       repo.listInventoryMovements({ bookId: book.id }),
       repo.listPurchases({ bookId: book.id }),
+      repo.listFeeDefinitions({ bookId: book.id, includeArchived: true }),
     ]);
     setCustomers(cs);
     setSuppliers(sup);
@@ -74,6 +77,7 @@ export default function Orders({ data }: { data: AppData }) {
     setSettlements(ss);
     setMovements(ms);
     setPurchases(pu);
+    setFeeDefs(fd);
   }
   useEffect(() => {
     void refresh();
@@ -85,17 +89,24 @@ export default function Orders({ data }: { data: AppData }) {
   const effCust = activeCustomers.some((c) => c.id === custId) ? custId : (activeCustomers[0]?.id ?? '');
   const oDecimals = currencyDef(oCur).decimals; // 新建订单按所选币种的精度解析单价
 
+  const activeFees = feeDefs.filter((f) => !f.archived); // 开单可选的费用（含归档的仍用于历史订单计算）
   const draftTotal = useMemo(
     () => lines.reduce((s, l) => s + Math.round((Number(l.qty) || 0) * toMinorSafe(l.price, oDecimals)), 0),
     [lines, oDecimals],
   );
+  // 新建订单的额外费用预览（按各行勾选的费用计算）+ 含费用合计
+  const draftFees = useMemo(() => {
+    const fl: FeeLine[] = lines.map((l) => ({ amount: Math.round((Number(l.qty) || 0) * toMinorSafe(l.price, oDecimals)), qty: Number(l.qty) || 0, feeIds: l.feeIds }));
+    return computeFees(fl, activeFees);
+  }, [lines, oDecimals, activeFees]);
+  const draftGross = draftTotal + feesTotal(draftFees);
 
   // 按「单据归属」把每笔收款摊到已完成订单（指定单优先，多付/未指定才 FIFO 顺延）
   // → 每单收款状态 + 未收清订单（账龄/逾期）+ 应收/预收概览。FIFO/账期编排在 biz.customerOrderStatus。
   const { payStatus, summary, outstanding } = useMemo(() => {
-    const { payStatus, outstanding } = customerOrderStatus(orders, customers, settlements, todayISO());
+    const { payStatus, outstanding } = customerOrderStatus(orders, customers, settlements, todayISO(), feeDefs);
     return { payStatus, outstanding, summary: receivableSummary(accounts, txns, convert) };
-  }, [orders, customers, settlements, accounts, txns, convert]);
+  }, [orders, customers, settlements, feeDefs, accounts, txns, convert]);
 
   // 应收账龄分桶：每笔欠款按账龄归桶，金额折算到展示币种（混合币种可比）。
   const aging = useMemo(
@@ -124,7 +135,8 @@ export default function Orders({ data }: { data: AppData }) {
   // 毛利按人民币本位：订单收入折人民币 − 总成本（库存 + 代采，恒 CNY）。
   const cnyCtx = { rates: convert.rates, scales: convert.scales, display: 'CNY' };
   const costOf = (o: StoredOrder): number => (cogsByOrder.get(o.id) ?? 0) + (dropshipCostByOrder.get(o.id) ?? 0);
-  const marginOf = (o: StoredOrder): number => convertAmount(orderTotal(o.lines), o.currency, cnyCtx) - costOf(o);
+  // 收入含额外费用（费用都当收入，B4）；毛利 = 含费收入折人民币 − 成本。
+  const marginOf = (o: StoredOrder): number => convertAmount(orderGrossTotal(o, feeDefs), o.currency, cnyCtx) - costOf(o);
 
   // 毛利汇总（人民币本位）：已完成订单按客户 / 按商品聚合收入、成本、毛利。
   const margins = useMemo(() => {
@@ -137,7 +149,7 @@ export default function Orders({ data }: { data: AppData }) {
       if (o.status !== 'completed') continue;
       completedIds.add(o.id);
       const cur = byCust.get(o.customerId) ?? { rev: 0, cost: 0 };
-      cur.rev += convertAmount(orderTotal(o.lines), o.currency, cny);
+      cur.rev += convertAmount(orderGrossTotal(o, feeDefs), o.currency, cny); // 含额外费用
       cur.cost += (cogsByOrder.get(o.id) ?? 0) + (dropshipCostByOrder.get(o.id) ?? 0);
       byCust.set(o.customerId, cur);
       for (const l of o.lines) {
@@ -164,12 +176,19 @@ export default function Orders({ data }: { data: AppData }) {
       .map((id) => ({ id, rev: prodRev.get(id) ?? 0, cost: prodCost.get(id) ?? 0, margin: (prodRev.get(id) ?? 0) - (prodCost.get(id) ?? 0) }))
       .sort((a, b) => b.margin - a.margin);
     return { cust, prod };
-  }, [orders, movements, purchases, cogsByOrder, dropshipCostByOrder, convert]);
+  }, [orders, movements, purchases, cogsByOrder, dropshipCostByOrder, feeDefs, convert]);
 
   const prodName = (id: string): string => products.find((p) => p.id === id)?.name ?? '（已删商品）';
 
   function setLine(key: string, patch: Partial<LineDraft>): void {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  }
+
+  /** 切换某行是否应用某额外费用。 */
+  function toggleLineFee(key: string, feeId: string): void {
+    setLines((ls) =>
+      ls.map((l) => (l.key === key ? { ...l, feeIds: l.feeIds.includes(feeId) ? l.feeIds.filter((f) => f !== feeId) : [...l.feeIds, feeId] } : l)),
+    );
   }
 
   function pickProduct(key: string, productId: string): void {
@@ -206,6 +225,7 @@ export default function Orders({ data }: { data: AppData }) {
           name: l.name.trim(),
           qty: Number(l.qty),
           unitPrice: toMinor(Number(l.price), oDecimals),
+          feeIds: l.feeIds,
         })),
       });
       setLines([emptyLine()]);
@@ -472,38 +492,50 @@ export default function Orders({ data }: { data: AppData }) {
             </div>
             <div className="ord-lines">
               {lines.map((l) => (
-                <div className="ord-line" key={l.key}>
-                  {products.length > 0 && (
-                    <select className="ord-pick" value={l.productId} onChange={(e) => pickProduct(l.key, e.target.value)}>
-                      <option value="">自由输入</option>
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
+                <div className="ord-line-block" key={l.key}>
+                  <div className="ord-line">
+                    {products.length > 0 && (
+                      <select className="ord-pick" value={l.productId} onChange={(e) => pickProduct(l.key, e.target.value)}>
+                        <option value="">自由输入</option>
+                        {products.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {/* 手改名称即视为自由文本行，断开商品关联（改价不断开：同一商品的自定义售价是合理的） */}
+                    <input placeholder="商品名称" value={l.name} onChange={(e) => setLine(l.key, { name: e.target.value, productId: '' })} />
+                    <input
+                      className="ord-qty"
+                      inputMode="decimal"
+                      placeholder="数量"
+                      value={l.qty}
+                      onChange={(e) => setLine(l.key, { qty: e.target.value })}
+                    />
+                    <input
+                      className="ord-price"
+                      inputMode="decimal"
+                      placeholder={`单价(${currencyDef(oCur).symbol})`}
+                      value={l.price}
+                      onChange={(e) => setLine(l.key, { price: e.target.value })}
+                    />
+                    <span className="ord-sub">{fmtMoney(Math.round((Number(l.qty) || 0) * toMinorSafe(l.price, oDecimals)), oCur)}</span>
+                    {lines.length > 1 && (
+                      <button className="del" title="删除此行" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}>
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  {activeFees.length > 0 && (
+                    <div className="ord-line-fees">
+                      <span className="muted small">额外费用：</span>
+                      {activeFees.map((f) => (
+                        <button key={f.id} className={`chip${l.feeIds.includes(f.id) ? ' on' : ''}`} onClick={() => toggleLineFee(l.key, f.id)}>
+                          {f.name}
+                        </button>
                       ))}
-                    </select>
-                  )}
-                  {/* 手改名称即视为自由文本行，断开商品关联（改价不断开：同一商品的自定义售价是合理的） */}
-                  <input placeholder="商品名称" value={l.name} onChange={(e) => setLine(l.key, { name: e.target.value, productId: '' })} />
-                  <input
-                    className="ord-qty"
-                    inputMode="decimal"
-                    placeholder="数量"
-                    value={l.qty}
-                    onChange={(e) => setLine(l.key, { qty: e.target.value })}
-                  />
-                  <input
-                    className="ord-price"
-                    inputMode="decimal"
-                    placeholder={`单价(${currencyDef(oCur).symbol})`}
-                    value={l.price}
-                    onChange={(e) => setLine(l.key, { price: e.target.value })}
-                  />
-                  <span className="ord-sub">{fmtMoney(Math.round((Number(l.qty) || 0) * toMinorSafe(l.price, oDecimals)), oCur)}</span>
-                  {lines.length > 1 && (
-                    <button className="del" title="删除此行" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))}>
-                      ×
-                    </button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -517,8 +549,13 @@ export default function Orders({ data }: { data: AppData }) {
                 <input placeholder="订单备注" value={note} onChange={(e) => setNote(e.target.value)} />
               </label>
             </div>
+            {draftFees.length > 0 && (
+              <div className="muted small" style={{ marginTop: 8 }}>
+                商品 {fmtMoney(draftTotal, oCur)} ＋ 额外费用（{draftFees.map((f) => `${f.name} ${fmtMoney(f.amount, oCur)}`).join('，')}）
+              </div>
+            )}
             <div className="ord-foot">
-              <span className="ord-total">合计 {fmtMoney(draftTotal, oCur)}</span>
+              <span className="ord-total">合计 {fmtMoney(draftGross, oCur)}</span>
               <button className="btn btn-primary" onClick={() => void save()}>
                 保存订单
               </button>
@@ -543,9 +580,17 @@ export default function Orders({ data }: { data: AppData }) {
                 </span>
                 <span className={`chip ${st.cls}`}>{st.label}</span>
                 {pay && <span className={`chip ${pay.cls}`}>{pay.label}</span>}
-                <span className="bnum">{fmtMoney(orderTotal(o.lines), o.currency)}</span>
+                <span className="bnum">{fmtMoney(orderGrossTotal(o, feeDefs), o.currency)}</span>
               </div>
               <div className="ord-items">{o.lines.map((l) => `${l.name}×${l.qty}`).join('，')}</div>
+              {(() => {
+                const fees = orderFees(o, feeDefs);
+                return fees.length > 0 ? (
+                  <div className="ord-items muted">
+                    含额外费用：{fees.map((f) => `${f.name} ${fmtMoney(f.amount, o.currency)}`).join('，')}
+                  </div>
+                ) : null;
+              })()}
               {o.status === 'completed' && costOf(o) > 0 && (
                 <div className="ord-margin">
                   毛利 <strong className={marginOf(o) >= 0 ? 'pos' : 'neg'}>{fmtMoney(marginOf(o))}</strong>

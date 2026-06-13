@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { accountBalance, convertAmount, outstandingCharges, unclearedCount } from '@app/core';
 import type { AccountingBasis, BookType, ConvertCtx } from '@app/core';
-import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredCustomer, StoredOrder, StoredSetting, StoredSettlement, StoredSupplier, StoredTransaction } from '@app/store';
+import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredCustomer, StoredFeeDefinition, StoredOrder, StoredSetting, StoredSettlement, StoredSupplier, StoredTransaction } from '@app/store';
 import { BOOK_META, createBookWithChart, isDesktop, ready } from './db';
 import { daysBetween, fmtMoney, setCurrencyRegistry, todayISO } from './format';
 import { customerOrderStatus, payableLedger } from './biz';
@@ -18,10 +18,11 @@ import Orders from './views/Orders';
 import Products from './views/Products';
 import Inventory from './views/Inventory';
 import Purchases from './views/Purchases';
+import FeeDefinitions from './views/FeeDefinitions';
 import Reconcile from './views/Reconcile';
 import Settings from './views/Settings';
 
-type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'reconcile' | 'customers' | 'suppliers' | 'orders' | 'products' | 'inventory' | 'purchases';
+type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'reconcile' | 'customers' | 'suppliers' | 'orders' | 'products' | 'inventory' | 'purchases' | 'fees';
 /** 顶层导航：财务总表 / 全局设置 / 某账本 id。 */
 const OVERVIEW = 'all';
 const SETTINGS = '__settings__';
@@ -62,6 +63,7 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['products', '商品'],
     ['inventory', '库存'],
     ['purchases', '采购'],
+    ['fees', '费用'],
     ['txns', '流水'],
     ['budgets', '预算'],
     ['accounts', '账户'],
@@ -84,6 +86,7 @@ export default function App() {
   const [customers, setCustomers] = useState<StoredCustomer[]>([]);
   const [suppliers, setSuppliers] = useState<StoredSupplier[]>([]);
   const [settlements, setSettlements] = useState<StoredSettlement[]>([]);
+  const [feeDefs, setFeeDefs] = useState<StoredFeeDefinition[]>([]);
   const [cur, setCur] = useState<'all' | string>('all');
   const [view, setView] = useState<View>('dashboard');
   const [creating, setCreating] = useState(false);
@@ -94,7 +97,7 @@ export default function App() {
   const [apDueDismissed, setApDueDismissed] = useState<Set<string>>(new Set());
 
   async function loadFrom(r: Repository): Promise<void> {
-    const [bk, a, t, b, s, os, cs, st, sup] = await Promise.all([
+    const [bk, a, t, b, s, os, cs, st, sup, fd] = await Promise.all([
       r.listBooks(),
       r.listAccounts(),
       r.listTransactions(),
@@ -104,6 +107,7 @@ export default function App() {
       r.listCustomers({ includeArchived: true }),
       r.listSettlements(),
       r.listSuppliers({ includeArchived: true }),
+      r.listFeeDefinitions({ includeArchived: true }),
     ]);
     setCurrencyRegistry(currenciesOf(s)); // 注入币种注册表，供 fmtMoney 等取符号/小数位
     setBooks(bk);
@@ -115,6 +119,7 @@ export default function App() {
     setCustomers(cs);
     setSettlements(st);
     setSuppliers(sup);
+    setFeeDefs(fd);
   }
 
   useEffect(() => {
@@ -164,6 +169,7 @@ export default function App() {
       customers.filter((c) => c.bookId === curBook.id),
       settlements.filter((s) => s.bookId === curBook.id),
       todayISO(),
+      feeDefs.filter((f) => f.bookId === curBook.id),
     );
     const due = outstanding.filter((o) => o.daysToDue !== null && o.daysToDue <= lead);
     if (due.length === 0) return null;
@@ -172,7 +178,7 @@ export default function App() {
       overdueCount: due.filter((o) => o.overdue).length,
       total: due.reduce((s, o) => s + convertAmount(o.owed, o.order.currency, convert), 0),
     };
-  }, [curBook, settings, orders, customers, settlements, convert]);
+  }, [curBook, settings, orders, customers, settlements, feeDefs, convert]);
 
   // 应付到期提醒（仅生意账本，复用同一提前天数设置）：供应商赊购临近到期（购货日 + 账期），含已逾期。
   const apDueReminder = useMemo(() => {
@@ -406,6 +412,7 @@ export default function App() {
             {view === 'products' && <Products data={data} />}
             {view === 'inventory' && <Inventory data={data} />}
             {view === 'purchases' && <Purchases data={data} />}
+            {view === 'fees' && <FeeDefinitions data={data} />}
           </>
         )}
       </main>

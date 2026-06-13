@@ -1,5 +1,5 @@
-import { accountBalance, allocateCustomerPayments, collectionEntry, convertAmount, creditPurchaseEntry, expandEntry, inventoryState, orderRevenueEntry, orderTotal, planInventoryIssue, purchaseTotal, supplierPaymentEntry } from '@app/core';
-import type { AccountType, ConvertCtx, Customer, CustomerPayment, IssuePlanLine, Order, OrderLine, OrderPaymentStatus, OrderStatus, PurchaseLine, Supplier } from '@app/core';
+import { accountBalance, allocateCustomerPayments, collectionEntry, computeFees, convertAmount, creditPurchaseEntry, expandEntry, feesTotal, inventoryState, lineTotal, orderRevenueEntry, orderTotal, planInventoryIssue, purchaseTotal, supplierPaymentEntry } from '@app/core';
+import type { AccountType, ConvertCtx, Customer, CustomerPayment, FeeDefinition, FeeLine, FeeResult, IssuePlanLine, Order, OrderLine, OrderPaymentStatus, OrderStatus, PurchaseLine, Supplier } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredCustomer, StoredInventoryMovement, StoredOrder, StoredProduct, StoredPurchase, StoredSettlement, StoredTransaction } from '@app/store';
 import { genId } from './db';
 import { daysBetween } from './format';
@@ -81,15 +81,34 @@ export interface OutstandingOrder {
   daysToDue: number | null;
 }
 
+// —— 额外费用（C2 Step 4）：费用都当收入，订单总额 = 商品额 + Σ费用。 ——
+
+/** 订单各行转 computeFees 输入（行金额 + 数量 + 应用的费用 id）。 */
+function orderFeeLines(order: Pick<Order, 'lines'>): FeeLine[] {
+  return order.lines.map((l) => ({ amount: lineTotal(l), qty: l.qty, feeIds: l.feeIds ?? [] }));
+}
+
+/** 某订单应用的额外费用明细（按账本费用定义计算）。 */
+export function orderFees(order: Pick<Order, 'lines'>, feeDefs: ReadonlyArray<FeeDefinition>): FeeResult[] {
+  return computeFees(orderFeeLines(order), feeDefs);
+}
+
+/** 订单总额（含额外费用，订单币种最小单位）= 商品额 + Σ费用——客户应付/收入按此。 */
+export function orderGrossTotal(order: Pick<Order, 'lines'>, feeDefs: ReadonlyArray<FeeDefinition>): number {
+  return orderTotal(order.lines) + feesTotal(orderFees(order, feeDefs));
+}
+
 /**
  * 按「客户 × 币种」把收款 FIFO 摊到各已完成订单，得到每单收款状态 + 未收清订单的账龄/逾期。
  * 应收账龄报表与到期提醒共用——FIFO 与账期编排集中在此，UI 不重复实现。
+ * 订单总额含额外费用（gross）——客户应付=商品+费用，与确认收入一致。
  */
 export function customerOrderStatus(
   orders: StoredOrder[],
   customers: StoredCustomer[],
   settlements: StoredSettlement[],
   today: string,
+  feeDefs: ReadonlyArray<FeeDefinition> = [],
 ): { payStatus: Map<string, OrderPayState>; outstanding: OutstandingOrder[] } {
   const payStatus = new Map<string, OrderPayState>();
   const outstanding: OutstandingOrder[] = [];
@@ -120,7 +139,7 @@ export function customerOrderStatus(
     const cust = customers.find((c) => c.id === cid);
     if (!cust) continue;
     const ledger = allocateCustomerPayments(
-      custOrders.map((o) => ({ id: o.id, total: orderTotal(o.lines), date: o.date })),
+      custOrders.map((o) => ({ id: o.id, total: orderGrossTotal(o, feeDefs), date: o.date })),
       paysByKey.get(key) ?? [],
     );
     for (const a of ledger.allocations) {
@@ -247,11 +266,11 @@ export async function saveOrder(
     date: string;
     currency: string;
     note: string;
-    lines: Array<{ productId: string | null; name: string; qty: number; unitPrice: number }>;
+    lines: Array<{ productId: string | null; name: string; qty: number; unitPrice: number; feeIds?: string[] }>;
   },
 ): Promise<void> {
   const orderId = genId();
-  const lines: OrderLine[] = opts.lines.map((l) => ({ id: genId(), orderId, name: l.name, qty: l.qty, unitPrice: l.unitPrice, productId: l.productId }));
+  const lines: OrderLine[] = opts.lines.map((l) => ({ id: genId(), orderId, name: l.name, qty: l.qty, unitPrice: l.unitPrice, productId: l.productId, feeIds: l.feeIds ?? [] }));
   const products = await repo.listProducts({ bookId: book.id });
   const movements = await repo.listInventoryMovements({ bookId: book.id });
   const shortfalls = orderShortfalls(lines, products, movements);
@@ -273,7 +292,9 @@ export async function saveOrder(
  * 库存出库部分按 `planInventoryIssue` 拆行——采购+库存仍不够则整单不落（校验在任何写入之前）。
  */
 export async function completeOrder(repo: Repository, book: StoredBook, order: Order, customer: Customer): Promise<void> {
-  const total = orderTotal(order.lines);
+  // 订单总额 = 商品额 + Σ额外费用（费用都当收入，B4）；确认收入与应收都按 gross。
+  const feeDefs = await repo.listFeeDefinitions({ bookId: book.id, includeArchived: true });
+  const total = orderGrossTotal(order, feeDefs);
   if (total <= 0) throw new Error('订单金额为 0，无法完成');
   const accounts = await repo.listAccounts({ bookId: book.id, includeArchived: true });
   const revenue = accounts.find((a) => a.type === 'income' && a.name === REVENUE);

@@ -261,6 +261,19 @@ async function bootstrapDemo(): Promise<Repository> {
     lines: [{ id: genId(), purchaseId: dropPurId, name: '定制礼盒', qty: 10, unitCost: toMinor(60), productId: prodDrop }],
   });
 
+  // 额外费用 + 公式引擎（C2 Step 4）——佣金：分组合计 <¥600 收 5%、≥¥600 收 4%（声明式阶梯）。
+  const commId = genId();
+  await repo.addFeeDefinition({
+    id: commId, bookId: biz.book.id, name: '佣金', calcType: 'percent',
+    tiers: [{ threshold: 0, value: 5 }, { threshold: toMinor(600), value: 4 }], archived: false,
+  });
+  // 一张应用佣金的待发货订单（A型工具×4 ¥500，佣金 5%=¥25）——完成时费用计入收入、应收=¥525。
+  const commOrderId = genId();
+  await repo.addOrder({
+    id: commOrderId, bookId: biz.book.id, customerId: custId, date: daysAgo(1), currency: 'CNY', status: 'pending_ship', note: '含佣金', revenueTxnId: null,
+    lines: [{ id: genId(), orderId: commOrderId, name: 'A型工具', qty: 4, unitPrice: toMinor(125), productId: prodA, feeIds: [commId] }],
+  });
+
   // 一张美元订单——展示「业务 AR 多币种」：海外客户赊购 $1,800，应收记 USD 子科目，
   // 可在订单页用美元账户收款。子科目名与 biz.arName('海外客户','USD') 一致，便于后续 UI 收款匹配。
   await repo.addAccount({ id: genId(), bookId: biz.book.id, name: '美元账户', type: 'asset', parentId: null, currency: 'USD', archived: false });
