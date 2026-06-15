@@ -99,7 +99,7 @@ When adding new behavior to `Repository`, the rule is:
 2. Make **both** the in-memory and SQLite implementations pass.
 3. Changes to `core` are **test-first** — write the pure-logic unit test before implementing.
 
-The SQLite driver varies by runtime, but all of them hide behind `Repository`: Node / tests use `node:sqlite`, production desktop uses `tauri-plugin-sql`, and browser / PWA uses wa-sqlite (OPFS). The SQL schema and queries are largely portable across them.
+The SQLite driver varies by runtime, but all of them hide behind `Repository`: Node / tests use `node:sqlite`, production desktop uses a self-written rusqlite + SQLCipher bridge (replacing tauri-plugin-sql; currently plaintext, local encryption in progress), and browser / PWA uses wa-sqlite (OPFS). The SQL schema and queries are largely portable across them.
 
 ---
 

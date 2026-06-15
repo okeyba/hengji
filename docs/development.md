@@ -99,7 +99,7 @@ core 里的 `assertBalanced` 是一道**安全防火墙**：分录求和不为 0
 2. 让内存实现和 SQLite 实现**都过**。
 3. `core` 的改动则 **test-first**——先写纯逻辑单测再实现。
 
-SQLite 驱动按运行环境分，但都藏在 `Repository` 之后：Node / 测试用 `node:sqlite`，生产桌面用 `tauri-plugin-sql`，浏览器 / PWA 用 wa-sqlite（OPFS）。SQL schema 与查询基本可平移。
+SQLite 驱动按运行环境分，但都藏在 `Repository` 之后：Node / 测试用 `node:sqlite`，生产桌面用自写 rusqlite + SQLCipher 桥（替代 tauri-plugin-sql；当前明文，本地加密开发中），浏览器 / PWA 用 wa-sqlite（OPFS）。SQL schema 与查询基本可平移。
 
 ---
 

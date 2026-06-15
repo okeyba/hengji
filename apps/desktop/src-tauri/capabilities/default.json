@@ -4,11 +4,6 @@
   "description": "Main window capabilities",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "sql:default",
-    "sql:allow-load",
-    "sql:allow-execute",
-    "sql:allow-select",
-    "sql:allow-close"
+    "core:default"
   ]
 }

@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@app/core": "workspace:*",
-    "@tauri-apps/plugin-sql": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^24",

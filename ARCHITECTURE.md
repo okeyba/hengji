@@ -166,7 +166,7 @@
 - **Shell：Tauri 2，桌面优先**（稳定）；移动随后（移动端 SQLite 上线前需真机 spike 验证）。一套 React/TS 前端桌面 + 移动复用。
 - **SQLite 驱动按运行环境分，均藏在 `Repository` 之后**：
   - Node / 测试：`node:sqlite`（Node 24 内置、零原生编译）
-  - 生产桌面：`tauri-plugin-sql`（sqlx）
+  - 生产桌面：自写 rusqlite + SQLCipher 桥（替代 tauri-plugin-sql，单连接 + 事务，`$N→?N`、列名→JSON；当前明文，本地加密开发中）
   - 浏览器 / PWA：wa-sqlite（OPFS）
   - SQL schema / 查询基本可平移。
 - 工具链：Node 24、pnpm 9、Vitest 3、TypeScript strict。
