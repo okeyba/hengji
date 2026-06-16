@@ -9,9 +9,9 @@ import { save } from '@tauri-apps/plugin-dialog';
  */
 
 /** 失败分流（与 Rust FailClass 对齐）。UI 据此分屏。 */
-export type FailClass = 'WrongPassword' | 'Locked' | 'Corrupt' | 'ChipUnavailable' | 'Internal';
+export type FailClass = 'WrongPassword' | 'Locked' | 'Corrupt' | 'ChipUnavailable' | 'Internal' | 'Destroyed';
 
-/** 三态状态行判定输入 + 备份新鲜度（阶段 4a）。 */
+/** 三态状态行判定输入 + 备份新鲜度（4a）+ 销毁态（4b）。 */
 export interface SecurityStatus {
   /** 信封是否存在（已加密；含信封损坏的「已加密但坏」态——此时 scheme 为 null）。 */
   encrypted: boolean;
@@ -22,6 +22,12 @@ export interface SecurityStatus {
   /** 上次明文备份时间（unix 秒）/ 路径；null = 从未备份。 */
   last_backup_unix: number | null;
   last_backup_path: string | null;
+  /** 数据是否已被销毁（终态，门优先识别）。 */
+  destroyed: boolean;
+  /** 当前失败计数 / 是否开启销毁 / 销毁阈值（解锁屏显"再错 N 次销毁、已错 M 次"）。 */
+  fail_count: number;
+  destroy_enabled: boolean;
+  destroy_threshold: number;
 }
 
 /** export_backup 成功回传。 */
@@ -61,3 +67,9 @@ export const pickBackupPath = (defaultName: string): Promise<string | null> =>
 
 /** 导出明文备份到 destPath（实际解密+写文件在 Rust 内完成）。 */
 export const exportBackup = (destPath: string): Promise<BackupInfo> => invoke('export_backup', { destPath });
+
+/** 开/关「错 N 次销毁」。开启要求本会话内已成功备份 + 备份文件仍完好（否则 reject）。 */
+export const setDestroyEnabled = (enabled: boolean): Promise<void> => invoke('set_destroy_enabled', { enabled });
+
+/** 销毁后「从空白重新开始」：清墓碑+sentinel，下次开库建全新空明文库。 */
+export const restartAfterDestroy = (): Promise<void> => invoke('restart_after_destroy');

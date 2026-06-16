@@ -144,7 +144,7 @@ pub fn db_open(
         // 先取 DEK→hex（在独立作用域里持 Crypto 锁），释放后再开库+持 Db 锁，保持「Crypto 先于 Db」的全局加锁序。
         let hex = {
             let guard = crypto.0.lock().unwrap();
-            let dek = guard.as_ref().ok_or("数据库已加密但尚未解锁")?;
+            let dek = guard.dek.as_ref().ok_or("数据库已加密但尚未解锁")?;
             crate::crypto::dek_hex(dek)
         };
         open_db(&full, Some(&hex))?

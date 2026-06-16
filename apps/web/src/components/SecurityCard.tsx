@@ -7,6 +7,7 @@ import {
   pickBackupPath,
   removePassword,
   securityStatus,
+  setDestroyEnabled,
   setPassword,
 } from '@app/store/crypto';
 import type { SecurityStatus } from '@app/store/crypto';
@@ -42,8 +43,8 @@ type Mode = 'idle' | 'set' | 'change' | 'remove';
 
 /**
  * 设置 →「安全」卡（仅桌面）。三态状态行（未加密 / 已加密·安全芯片强 / 已加密但芯片不可用·信封损坏）+
- * 设/改/移除密码 + 自动锁 + 备份导出（明文，关闭加密的等价物）。口令由用户原生输入。
- * set/remove 触发 Rust 侧明↔密库原子迁移。「错 N 次销毁」留 4b。
+ * 设/改/移除密码 + 自动锁 + 备份导出（明文，关闭加密的等价物）+「错 N 次销毁」开关（默认关，强闸门：
+ * 开启要求本会话内已成功备份）。口令由用户原生输入。set/remove 触发 Rust 侧明↔密库原子迁移。
  */
 export default function SecurityCard({
   repo,
@@ -65,6 +66,7 @@ export default function SecurityCard({
   const [err, setErr] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
+  const [destroyMsg, setDestroyMsg] = useState<string | null>(null);
 
   async function refresh(): Promise<void> {
     try {
@@ -144,6 +146,24 @@ export default function SecurityCard({
       setErr(msgOf(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function doToggleDestroy(next: boolean): Promise<void> {
+    setDestroyMsg(null);
+    if (
+      next &&
+      !confirm(
+        `开启后，连续输错 ${status?.destroy_threshold ?? 5} 次密码将【永久销毁】全部账本——本机无法找回，只能从你导出的备份恢复。\n` +
+          `这等于把「删库」能力交给能碰这台电脑的人。确定开启？`,
+      )
+    )
+      return;
+    try {
+      await setDestroyEnabled(next);
+      await refresh();
+    } catch (e) {
+      setDestroyMsg(msgOf(e)); // 最常见：未在本会话内导出备份 → 提示先备份
     }
   }
 
@@ -318,7 +338,28 @@ export default function SecurityCard({
         {backupMsg && <p className="muted small">{backupMsg}</p>}
       </div>
 
-      <p className="muted small sec-todo">「输错多次自动销毁」将在下一步提供。</p>
+      {/* —— 错 N 次销毁（默认关 · 强闸门）—— */}
+      {strong && (
+        <div className="sec-destroy">
+          <label className="chkline">
+            <input
+              type="checkbox"
+              checked={status?.destroy_enabled ?? false}
+              onChange={(e) => void doToggleDestroy(e.target.checked)}
+            />
+            错 {status?.destroy_threshold ?? 5} 次密码自动销毁（默认关）
+          </label>
+          <p className="muted small">
+            开启后，连续输错 {status?.destroy_threshold ?? 5} 次密码会<strong>永久销毁全部账本</strong>
+            （删掉芯片里的封装密钥，本机无法找回，只能从备份恢复）。<strong>必须先在本次会话内导出一份备份</strong>才能开启。
+            这是把「删库」能力递给能物理碰这台电脑的人——按需谨慎开启。
+          </p>
+          {status?.destroy_enabled && (
+            <p className="sec-warn-line small">⚠ 已开启：连续输错 {status.destroy_threshold} 次将永久销毁全部账本、本机无法找回。</p>
+          )}
+          {destroyMsg && <p className="form-err">{destroyMsg}</p>}
+        </div>
+      )}
     </div>
   );
 }

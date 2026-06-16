@@ -36,11 +36,19 @@ pub(crate) fn dek_hex(dek: &[u8; 32]) -> Zeroizing<String> {
     Zeroizing::new(dek.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// 已解锁的 DEK（Zeroizing：替换/drop 时清零）。仅存在 Rust 侧，绝不跨 IPC 回传 JS。
-/// 这把锁还**串行化所有 crypto 命令**：Tauri 同步命令跑在线程池上，可并发；改密/解锁/移除都在
+/// 已解锁会话状态（仅 Rust 侧，绝不跨 IPC 回传 JS）。
+#[derive(Default)]
+pub struct CryptoState {
+    /// 已解锁的 DEK（Zeroizing：替换/drop 时清零）。
+    pub dek: Option<Zeroizing<[u8; 32]>>,
+    /// 本次解锁会话内是否成功导出过备份（强闸门：开启销毁前要求本会话内已备份；解锁/锁定时归零）。
+    pub backed_up_session: bool,
+}
+
+/// 这把锁**串行化所有 crypto 命令**：Tauri 同步命令跑在线程池上，可并发；改密/解锁/移除/销毁都在
 /// 固定 slot a/b + 单一 heng.dek.tpm 上做多步非原子操作，若并发会互踩（如改密 commit 与另一路
 /// reconcile 的删 slot 撞车 → 封装文件指向的 slot 钥匙被删 = 库永久不可解）。命令全程持此锁互斥。
-pub struct Crypto(pub Mutex<Option<Zeroizing<[u8; 32]>>>);
+pub struct Crypto(pub Mutex<CryptoState>);
 
 /// 解锁/封装失败的分流（§5）。UI 据此分屏：
 /// - WrongPassword：口令错（芯片 NTE_PERM 拒）→ 计入销毁计数（Phase 4）。
@@ -56,6 +64,8 @@ pub enum FailClass {
     Corrupt,
     ChipUnavailable,
     Internal,
+    /// 本次错口令使失败计数达阈值、且已开启销毁 → 数据已销毁。UI 跳终态屏（不再是普通错口令）。
+    Destroyed,
 }
 
 /// 跨 IPC 回传给 JS 的错误：粗分类 + 原始 HRESULT（供 UI 细化，如锁定 vs 单纯错口令）+ 文案。
@@ -78,6 +88,12 @@ pub struct SecurityStatus {
     /// 上次明文备份的时间（unix 秒）/ 路径（heng.security 记录，锁定态可读）。None＝从未备份。
     pub last_backup_unix: Option<i64>,
     pub last_backup_path: Option<String>,
+    /// 数据是否已被销毁（heng.destroyed sentinel 在）。门优先识别 → 终态屏。
+    pub destroyed: bool,
+    /// 当前失败计数 / 是否开启销毁 / 销毁阈值（解锁屏显"再错 N 次销毁、已错 M 次"；设置卡显开关）。
+    pub fail_count: u32,
+    pub destroy_enabled: bool,
+    pub destroy_threshold: u32,
 }
 
 /// export_backup 成功后回传 JS（路径 + 时间 + 行数，供 UI 显示新鲜度）。
@@ -118,6 +134,14 @@ mod engine {
     const MIGRATE_MARKER: &str = "heng.migrate";
     /// 预解锁安全状态（销毁计数/开关 + 上次备份）。锁定态可读，故是 config_dir 明文文件（与信封同列）。
     const SECURITY_FILE: &str = "heng.security";
+    /// 错 N 次销毁的阈值（用户拍板 N=5，不加额外节流）。
+    pub(super) const DESTROY_THRESHOLD: u32 = 5;
+    /// 销毁进行中标记（含隔离目录路径）。reconcile 见之＝前滚补完销毁（单向、不回滚）。
+    const DESTROYING_MARKER: &str = "heng.destroying";
+    /// 销毁完成 sentinel（终态）。门优先识别 → 终态屏，与"损坏""芯片不可用"彻底分开。
+    const DESTROYED_SENTINEL: &str = "heng.destroyed";
+    /// 隔离区目录名前缀（密文库销毁前移到这里，密钥删后不可解、仅作墓碑）。
+    const QUARANTINE_PREFIX: &str = "heng.destroyed-";
     /// 迁移临时库（同目录＝同卷，便于原子 rename 顶替 heng.db）。
     const ENC_TMP: &str = "heng.db.enc.tmp";
     const PLAIN_TMP: &str = "heng.db.plain.tmp";
@@ -446,6 +470,202 @@ mod engine {
         sec.last_backup_rows = Some(rows);
         write_security(dir, &sec)?;
         Ok(BackupInfo { path: dest.to_string_lossy().into_owned(), unix, rows })
+    }
+
+    // ---- 销毁（错 N 次，§5）----
+
+    /// 销毁进行中标记（携隔离目录路径；heal 复用、不重算 now()，避免两次销毁/重入碰撞）。
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    struct DestroyMarker {
+        quarantine_dir: String,
+    }
+
+    /// 校验记录在案的备份**当前仍在且完整**（文件存在 + sha256 与记录一致）。强闸门：开启销毁前、
+    /// 真正销毁前都要过这关；过不了则**中止销毁**、绝不在无有效备份时毁数据。
+    fn verify_backup(sec: &SecurityFile) -> Result<(), CryptoError> {
+        let (Some(path), Some(sha)) = (&sec.last_backup_path, &sec.last_backup_sha256) else {
+            return Err(internal("没有可用备份记录".into()));
+        };
+        let p = Path::new(path);
+        if !p.exists() {
+            return Err(internal(format!("备份文件已不在: {path}")));
+        }
+        if &sha256_file(p)? != sha {
+            return Err(internal(format!("备份文件已损坏或被改动: {path}")));
+        }
+        Ok(())
+    }
+
+    /// 解锁成功 → 失败计数归零（绑当前信封哈希一并写）。
+    pub(super) fn on_unlock_success(dir: &Path) {
+        let mut sec = read_security(dir);
+        if sec.fail_count != 0 {
+            sec.fail_count = 0;
+            let _ = write_security(dir, &sec);
+        }
+    }
+
+    /// 错口令（**仅** WrongPassword 调用）→ 计数 +1（原子 fsync）。达阈值且开了销毁且备份验得过 → 销毁、返回 true。
+    /// 备份验不过 → **不销毁**（数据保留加密态、留待恢复备份），返回 false。其它情况返回 false。
+    pub(super) fn on_wrong_password(dir: &Path) -> Result<bool, CryptoError> {
+        let mut sec = read_security(dir);
+        sec.fail_count = sec.fail_count.saturating_add(1);
+        write_security(dir, &sec)?;
+        if sec.destroy_enabled && sec.fail_count >= DESTROY_THRESHOLD {
+            // destroy() 内含迁移闸 + 备份重验（紧贴销毁、闭合 TOCTOU）：任一不过则提交点前中止、不毁数据。
+            let _ = destroy(dir);
+            // 一旦销毁已提交（标记/sentinel 在）即视为 destroyed（前滚到底、门会自愈补完）；
+            // 提交前中止（迁移在途/备份验不过 → 标记没写）则 false、数据原样保留。
+            return Ok(is_destroyed(dir));
+        }
+        Ok(false)
+    }
+
+    /// 是否处于销毁态。**sentinel 或 destroying 标记任一在即算 destroyed**（review must-fix #1/#3）：
+    /// 标记一旦写下＝销毁已提交（前滚单向）；即便后续写 sentinel 因崩溃/磁盘满失败，门也据标记走终态屏、
+    /// 绝不落到 plaintext 分支静默造空库。标记只在销毁完整收尾(slot 删净)后删除、那时 sentinel 必已在。
+    pub(super) fn is_destroyed(dir: &Path) -> bool {
+        dir.join(DESTROYED_SENTINEL).exists() || dir.join(DESTROYING_MARKER).exists()
+    }
+
+    /// 开/关销毁。开启要求：本次解锁会话内成功备份过（session_backed_up）+ 记录的备份仍在且完整。
+    pub(super) fn set_destroy_enabled(dir: &Path, enabled: bool, session_backed_up: bool) -> Result<(), CryptoError> {
+        let mut sec = read_security(dir);
+        if enabled {
+            if !dir.join(ENVELOPE).exists() {
+                return Err(internal("未加密，无法开启销毁".into()));
+            }
+            if !session_backed_up {
+                return Err(internal("开启销毁前，请先在本次解锁会话内导出一份备份".into()));
+            }
+            verify_backup(&sec)?; // 备份必须仍在且完整
+        }
+        sec.destroy_enabled = enabled;
+        write_security(dir, &sec)?;
+        Ok(())
+    }
+
+    /// 销毁（错 N 次触发）。**前滚单向**（一旦触发即完成，绝不回滚——数据本就该没）。
+    /// 顺序（崩溃安全，见 reconcile 自愈）：写标记(含隔离路径) → 隔离密文库+清边车+扫残留 tmp →
+    /// 删信封 → **写 sentinel（先于删钥匙！）** → 删两 slot（线程化 bool：没删净留标记 heal）→ 删标记。
+    /// 调用前提：调用方已 reconcile（无迁移/改密标记在途）。
+    fn destroy(dir: &Path) -> Result<(), CryptoError> {
+        // 双保险（must-fix #1）：销毁绝不与迁移/改密中途并发。正常路径 engine::unlock 已先 reconcile 清掉它们；
+        // 若仍在途则**中止销毁**（数据保留，下次重试），绝不在半迁移态毁数据。
+        if dir.join(MIGRATE_MARKER).exists() || dir.join(ENVELOPE_NEW).exists() {
+            return Err(internal("迁移/改密进行中，暂不销毁".into()));
+        }
+        // **最后一道备份闸**（review BACKUP-VERIFY-GATE / #2）：紧贴销毁提交点重验，闭合「on_wrong_password 验过
+        // 到这里」之间的 TOCTOU——备份不在/损坏则**中止销毁、绝不无恢复路径毁数据**。这是销毁的提交闸：
+        // 一旦下面 run_destroy 写标记即视为已提交、前滚到底（heal 不再重验，避免半态死局）。
+        verify_backup(&read_security(dir))?;
+        let qdir = dir.join(format!("{QUARANTINE_PREFIX}{}", now_unix()));
+        run_destroy(dir, &qdir, true)
+    }
+
+    /// 销毁的可重入实现（首发 fresh=true 写标记；reconcile heal 时 fresh=false 复用既有标记里的隔离路径）。
+    fn run_destroy(dir: &Path, qdir: &Path, fresh: bool) -> Result<(), CryptoError> {
+        if fresh {
+            write_destroy_marker(dir, qdir)?;
+        }
+        let _ = std::fs::create_dir_all(qdir);
+        // **sentinel 先于一切数据破坏写**（review must-fix #1）：移库/删信封前先把终态真相落盘，
+        // 杜绝"库已隔离/信封已删但无 sentinel→门走 plaintext 造空库"的窗口。（标记已覆盖此窗口，sentinel-first 再加一层。）
+        write_destroyed_sentinel(dir)?;
+        // 隔离密文库（移而不删——非静默 unlink；密钥删后仍不可解，仅作墓碑）。库可能已被前次 heal 移走 → 容缺失。
+        let db = dir.join(DB_FILE);
+        if db.exists() {
+            let _ = rename_with_retry(&db, &qdir.join(DB_FILE));
+        }
+        clean_sidecars(&db);
+        // 扫掉 config_dir 里任何残留的明文/迁移 tmp（避免销毁后留明文窗口）。
+        for tmp in ["heng.db.enc.tmp", "heng.db.plain.tmp"] {
+            let _ = std::fs::remove_file(dir.join(tmp));
+        }
+        let _ = std::fs::remove_file(dir.join(ENVELOPE)); // 删信封
+        write_quarantine_readme(qdir);
+        let slots_gone = delete_both_slots(None); // 删两 slot（不可逆）
+        // 计数清零（数据已没，计数无意义；信封已删 → read_security 本就会归零，这里显式写一次）。
+        let mut sec = read_security(dir);
+        sec.fail_count = 0;
+        sec.destroy_enabled = false;
+        let _ = write_security(dir, &sec);
+        if slots_gone {
+            let _ = std::fs::remove_file(dir.join(DESTROYING_MARKER));
+        }
+        // slot 没删净 → 留标记作 heal 锚点，下次 reconcile 重试删钥匙。
+        Ok(())
+    }
+
+    fn write_destroy_marker(dir: &Path, qdir: &Path) -> Result<(), CryptoError> {
+        let m = DestroyMarker { quarantine_dir: qdir.to_string_lossy().into_owned() };
+        let data = serde_json::to_vec_pretty(&m).map_err(|e| internal(format!("serialize destroy marker: {e}")))?;
+        let tmp = dir.join(format!("{DESTROYING_MARKER}.tmp"));
+        let mut f = File::create(&tmp).map_err(internal_io)?;
+        f.write_all(&data).map_err(internal_io)?;
+        f.sync_all().map_err(internal_io)?;
+        rename_with_retry(&tmp, &dir.join(DESTROYING_MARKER))
+    }
+    fn write_destroyed_sentinel(dir: &Path) -> Result<(), CryptoError> {
+        let data = serde_json::to_vec_pretty(&serde_json::json!({ "destroyed_unix": now_unix() }))
+            .map_err(|e| internal(format!("serialize sentinel: {e}")))?;
+        let tmp = dir.join(format!("{DESTROYED_SENTINEL}.tmp"));
+        let mut f = File::create(&tmp).map_err(internal_io)?;
+        f.write_all(&data).map_err(internal_io)?;
+        f.sync_all().map_err(internal_io)?;
+        rename_with_retry(&tmp, &dir.join(DESTROYED_SENTINEL))
+    }
+    fn write_quarantine_readme(qdir: &Path) {
+        let note = "此目录是衡记「错密码达上限自动销毁」留下的密文墓碑。\r\n\
+            数据已按你的安全设置永久销毁：封装密钥已从安全芯片删除，这份密文**无法再解开**。\r\n\
+            可恢复的数据只在你此前导出的未加密备份里。确认无用后可整目录删除。\r\n";
+        let _ = std::fs::write(qdir.join("README.txt"), note);
+    }
+
+    /// 销毁自愈（在 reconcile **最前面**调用）：标记在 → 前滚补完销毁、返回 true（调用方据此短路、忽略迁移/改密标记）。
+    fn heal_destroy(dir: &Path) -> bool {
+        let mp = dir.join(DESTROYING_MARKER);
+        if !mp.exists() {
+            return false;
+        }
+        let qdir = read_marker_json::<DestroyMarker>(&mp)
+            .map(|m| std::path::PathBuf::from(m.quarantine_dir))
+            // 标记损坏 → 退一个新隔离目录名（极罕见；至少把销毁补完不留半态）。
+            .unwrap_or_else(|| dir.join(format!("{QUARANTINE_PREFIX}heal-{}", now_unix())));
+        let _ = run_destroy(dir, &qdir, false);
+        true
+    }
+
+    fn read_marker_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+        std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok())
+    }
+
+    /// 销毁后「从空白重新开始」：清 sentinel + 标记 + 隔离区 + heng.security，下次启动即建全新空明文库。
+    pub(super) fn restart_after_destroy(dir: &Path) -> Result<(), CryptoError> {
+        // **sentinel + 标记先删且必须确认删掉**（review DESTROY-005）：删不掉就别动其它（隔离区保留可重试），
+        // 报错让 UI 重试——否则它俩任一残留下次启动仍判 destroyed、用户卡死终态屏（is_destroyed 看二者）。
+        let _ = std::fs::remove_file(dir.join(DESTROYED_SENTINEL));
+        let _ = std::fs::remove_file(dir.join(DESTROYING_MARKER));
+        if is_destroyed(dir) {
+            return Err(internal("清除销毁标记失败（文件被占用？），请稍后重试".into()));
+        }
+        // 兜底清干净（即便 run_destroy 某步删失败，这里也确保下次是全新空库）：信封 + 各标记 + 状态文件。
+        for f in [ENVELOPE, ENVELOPE_NEW, MIGRATE_MARKER, SECURITY_FILE] {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+        // 清掉所有隔离墓碑目录。
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with(QUARANTINE_PREFIX) {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        }
+        // 残留库一并清（销毁已把它隔离走；若有残留也清掉，确保下次是全新空库）。
+        let db = dir.join(DB_FILE);
+        let _ = std::fs::remove_file(&db);
+        clean_sidecars(&db);
+        Ok(())
     }
 
     /// 库文件头是否为明文 SQLite。文件缺失／太短 → 视为「非明文」（保守：不会把损坏库当明文去开）。
@@ -786,6 +1006,11 @@ mod engine {
     /// 2. **`heng.dek.tpm.new`**（改密在 commit 前中断）：删 staging slot + .new（用旧口令仍可解）。
     /// 3. 顺带清掉 live 信封的非 live slot 孤儿钥匙。
     pub(super) fn reconcile(dir: &Path) {
+        // —— 0. 销毁自愈（**最前面 + 短路**）：销毁是终态、单向前滚，优先于一切迁移/改密标记 ——
+        // （否则中断的销毁 + 残留迁移标记会互踩成无 sentinel 的死局，review must-fix #1）。
+        if heal_destroy(dir) {
+            return;
+        }
         // —— 1. 迁移标记 ——
         let markerp = dir.join(MIGRATE_MARKER);
         if markerp.exists() {
@@ -858,6 +1083,8 @@ mod engine {
 
     // ---- 引擎操作（命令薄包装它们；测试直接调） ----
 
+    /// 读当前安全状态。**调用前须先 reconcile**（security_status 命令已保证）：否则中断的销毁/迁移未自愈，
+    /// destroyed/encrypted 判定可能基于半态。仅经 security_status 命令调用，勿在别处直接调 status() 而不 reconcile。
     pub(super) fn status(dir: &Path) -> SecurityStatus {
         let envelope = dir.join(ENVELOPE);
         let (encrypted, scheme) = match read_envelope(&envelope) {
@@ -872,6 +1099,10 @@ mod engine {
             tpm_available: open_provider().is_ok(),
             last_backup_unix: sec.last_backup_unix,
             last_backup_path: sec.last_backup_path,
+            destroyed: is_destroyed(dir),
+            fail_count: sec.fail_count,
+            destroy_enabled: sec.destroy_enabled,
+            destroy_threshold: DESTROY_THRESHOLD,
         }
     }
 
@@ -1161,6 +1392,107 @@ mod engine {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        // ---- 销毁（4b）。文件态断言与 TPM 无关；delete_both_slots 在本机 fTPM 上删不存在的 slot＝0-DA no-op ----
+
+        fn setup_destroyable(dir: &Path, fail_count: u32, destroy_enabled: bool) -> std::path::PathBuf {
+            let _ = std::fs::remove_dir_all(dir);
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(ENVELOPE), b"dummy-envelope").unwrap();
+            std::fs::write(dir.join(DB_FILE), b"cipher-db-bytes-not-plaintext").unwrap();
+            let bak = dir.join("backup.db");
+            std::fs::write(&bak, b"plaintext-backup-data").unwrap();
+            let sec = SecurityFile {
+                fail_count,
+                destroy_enabled,
+                last_backup_path: Some(bak.to_string_lossy().into_owned()),
+                last_backup_sha256: Some(sha256_file(&bak).unwrap()),
+                ..Default::default()
+            };
+            write_security(dir, &sec).unwrap(); // 盖当前信封哈希 → read 时校验通过
+            bak
+        }
+
+        #[test]
+        fn verify_backup_checks_presence_and_hash() {
+            let dir = std::env::temp_dir().join(format!("heng-vbak-{}", std::process::id()));
+            let bak = setup_destroyable(&dir, 0, false);
+            let sec = read_security(&dir);
+            assert!(verify_backup(&sec).is_ok(), "完好备份应过");
+            std::fs::write(&bak, b"TAMPERED").unwrap(); // 改动 → sha 变
+            assert!(verify_backup(&sec).is_err(), "改动的备份应拒");
+            std::fs::remove_file(&bak).unwrap();
+            assert!(verify_backup(&sec).is_err(), "缺失的备份应拒");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn set_destroy_enabled_requires_session_backup_and_valid_file() {
+            let dir = std::env::temp_dir().join(format!("heng-sde-{}", std::process::id()));
+            let bak = setup_destroyable(&dir, 0, false);
+            assert!(set_destroy_enabled(&dir, true, false).is_err(), "无本会话备份 → 拒开");
+            assert!(set_destroy_enabled(&dir, true, true).is_ok(), "有会话备份+备份完好 → 可开");
+            assert!(read_security(&dir).destroy_enabled);
+            // 备份没了 → 不能再开
+            std::fs::remove_file(&bak).unwrap();
+            assert!(set_destroy_enabled(&dir, true, true).is_err(), "备份缺失 → 拒开");
+            // 关闭恒可
+            assert!(set_destroy_enabled(&dir, false, false).is_ok());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn wrong_password_destroys_at_threshold_only_with_valid_backup() {
+            // 第 5 次错口令 + 开了销毁 + 备份完好 → 销毁
+            let dir = std::env::temp_dir().join(format!("heng-wpd-{}", std::process::id()));
+            setup_destroyable(&dir, 4, true);
+            let destroyed = on_wrong_password(&dir).unwrap();
+            assert!(destroyed, "第5次错口令应触发销毁");
+            assert!(is_destroyed(&dir), "sentinel 应在");
+            assert!(!dir.join(ENVELOPE).exists(), "信封应删");
+            assert!(!dir.join(DB_FILE).exists(), "密文库应移走");
+            let q = std::fs::read_dir(&dir).unwrap().flatten()
+                .find(|e| e.file_name().to_string_lossy().starts_with(QUARANTINE_PREFIX)).expect("应有隔离目录");
+            assert!(q.path().join(DB_FILE).exists(), "密文库应在隔离区（墓碑、移而不删）");
+            assert!(q.path().join("README.txt").exists());
+            assert!(status(&dir).destroyed);
+            // 从空白重新开始 → 清理干净
+            restart_after_destroy(&dir).unwrap();
+            assert!(!is_destroyed(&dir));
+            assert!(!dir.join(DB_FILE).exists());
+            assert!(std::fs::read_dir(&dir).unwrap().flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with(QUARANTINE_PREFIX)), "隔离墓碑应清掉");
+            let _ = std::fs::remove_dir_all(&dir);
+
+            // 备份损坏 → 第 5 次错口令**中止销毁**、数据保留
+            let dir2 = std::env::temp_dir().join(format!("heng-wpd2-{}", std::process::id()));
+            let bak2 = setup_destroyable(&dir2, 4, true);
+            std::fs::write(&bak2, b"corrupted-now").unwrap(); // sha 不再匹配
+            let destroyed2 = on_wrong_password(&dir2).unwrap();
+            assert!(!destroyed2, "备份损坏 → 中止销毁");
+            assert!(dir2.join(ENVELOPE).exists() && dir2.join(DB_FILE).exists(), "未销毁，数据保留");
+            assert!(!is_destroyed(&dir2));
+            let _ = std::fs::remove_dir_all(&dir2);
+        }
+
+        #[test]
+        fn destroy_heal_forward_rolls_interrupted_destroy() {
+            // 模拟「写了 destroying 标记 + 库还在 + 无 sentinel」的中断态 → reconcile 前滚补完。
+            let dir = std::env::temp_dir().join(format!("heng-dheal-{}", std::process::id()));
+            setup_destroyable(&dir, 5, true);
+            let qdir = dir.join(format!("{QUARANTINE_PREFIX}interrupted"));
+            write_destroy_marker(&dir, &qdir).unwrap();
+            // 标记一写即视为 destroyed（提交点）；sentinel 尚未落盘。
+            assert!(dir.join(DESTROYING_MARKER).exists() && is_destroyed(&dir));
+            assert!(!dir.join(DESTROYED_SENTINEL).exists(), "sentinel 尚未写");
+            // reconcile 最前面处理 destroy：前滚补完。
+            reconcile(&dir);
+            assert!(dir.join(DESTROYED_SENTINEL).exists(), "heal 应补写 sentinel");
+            assert!(is_destroyed(&dir));
+            assert!(!dir.join(ENVELOPE).exists(), "heal 应删信封");
+            assert!(qdir.join(DB_FILE).exists(), "heal 应把库移进标记记录的隔离目录");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         // ---- 真 TPM 集成测试（消耗用户机芯片 + DA；默认 #[ignore]） ----
         // 这些用固定 slot a/b ⇒ **必须串行**：手动跑
         //   build-tauri.bat 同环境下 `cargo test -- --ignored --test-threads=1`
@@ -1296,7 +1628,7 @@ pub fn set_password(
             // 迁移已提交＝库已密文。DEK 先入 state：即便随后 open_db 因瞬时文件锁失败，
             // 本会话后续 db_open(encrypted) 或重启解锁仍能用它开库，不丢密钥（review lock-1/sec-1）。
             let opened = open_db(&db_file, Some(&dek_hex(&dek)));
-            *dek_slot = Some(dek);
+            dek_slot.dek = Some(dek);
             *conn_slot = Some(opened.map_err(internal_err)?);
             Ok(())
         }
@@ -1313,14 +1645,37 @@ pub fn set_password(
     }
 }
 
+/// 解锁。全程持 Crypto 锁，**串行化失败计数的读改写**（否则成功归零会被并发的错误尝试覆写回去 → 正确口令后仍被销毁）。
+/// 计数纪律（§5）：**仅** WrongPassword +1；成功归零；Locked/Corrupt/ChipUnavailable/Internal **不动计数**。
+/// 计数达阈值且开了销毁且备份验得过 → 销毁，返回 FailClass::Destroyed（UI 跳终态屏）。
 #[tauri::command]
 pub fn unlock(app: AppHandle, crypto: State<Crypto>, password: String) -> Result<(), CryptoError> {
     let dir = config_dir(&app).map_err(internal_err)?;
-    let mut dek_slot = crypto.0.lock().unwrap();
-    let dek = engine::unlock(&dir, &password)?;
-    *dek_slot = Some(dek);
-    // bootstrap 在解锁成功后调 db_open(encrypted=true)，从 Crypto state 取该 DEK 开 SQLCipher 库。
-    Ok(())
+    let mut state = crypto.0.lock().unwrap();
+    match engine::unlock(&dir, &password) {
+        Ok(dek) => {
+            engine::on_unlock_success(&dir); // 失败计数归零
+            state.dek = Some(dek);
+            state.backed_up_session = false; // 新会话：重置"本会话已备份"标记
+            // bootstrap 在解锁成功后调 db_open(encrypted=true)，从 Crypto state 取该 DEK 开 SQLCipher 库。
+            Ok(())
+        }
+        Err(e) if e.class == FailClass::WrongPassword => {
+            // 错口令 +1；达阈值且开了销毁且备份完好 → 销毁。
+            match engine::on_wrong_password(&dir) {
+                Ok(true) => {
+                    state.dek = None;
+                    Err(CryptoError {
+                        class: FailClass::Destroyed,
+                        code: 0,
+                        message: "连续输错密码达上限，数据已按安全设置销毁".into(),
+                    })
+                }
+                _ => Err(e), // 未达阈值/未开销毁/备份验不过(中止销毁、数据保留) → 原样返回错口令
+            }
+        }
+        Err(e) => Err(e), // Locked/Corrupt/ChipUnavailable/Internal：不动计数
+    }
 }
 
 #[tauri::command]
@@ -1352,13 +1707,13 @@ pub fn remove_password(
         Ok(()) => {
             let conn = open_db(&db_file, None).map_err(internal_err)?; // 库已明文
             *conn_slot = Some(conn);
-            *dek_slot = None; // 清掉已解锁 DEK
+            dek_slot.dek = None; // 清掉已解锁 DEK
             Ok(())
         }
         Err(e) => {
             engine::reconcile(&dir); // 与 set_password 错误路径对称：healing 任何中断的迁移再重开连接
             // 提交点前失败 ⇒ 仍是加密态；用本会话已解锁的 DEK 重开密文连接（移除失败不清 dek_slot）。
-            if let Some(dek) = dek_slot.as_ref() {
+            if let Some(dek) = dek_slot.dek.as_ref() {
                 if let Ok(conn) = open_db(&db_file, Some(&dek_hex(dek))) {
                     *conn_slot = Some(conn);
                 }
@@ -1375,18 +1730,42 @@ pub fn remove_password(
 /// 锁定：清掉已解锁 DEK + 关闭 DB 连接（自动锁 / 手动锁用）。之后 UI 回到解锁屏，重新 unlock→db_open。
 #[tauri::command]
 pub fn lock(crypto: State<Crypto>, db: State<Db>) -> Result<(), String> {
-    let mut dek = crypto.0.lock().unwrap();
+    let mut state = crypto.0.lock().unwrap();
     let mut conn = db.0.lock().unwrap();
-    *dek = None;
+    state.dek = None;
+    state.backed_up_session = false; // 新会话重新要求备份才能开销毁
     *conn = None;
     Ok(())
 }
 
 /// 导出一份未加密备份到用户选定路径（dest_path 由 JS 侧原生「另存为」对话框给定）。
 /// 加密库用已解锁 DEK 解出明文写出；未加密库直接明文导出。持 Crypto 锁串行化（不与迁移 rename 撞）。
+/// 成功后标记"本会话已备份"（强闸门：开销毁前要求本会话内已成功备份）。
 #[tauri::command]
 pub fn export_backup(app: AppHandle, crypto: State<Crypto>, dest_path: String) -> Result<BackupInfo, CryptoError> {
     let dir = config_dir(&app).map_err(internal_err)?;
-    let dek_guard = crypto.0.lock().unwrap(); // 串行化 + 取已解锁 DEK（as_deref → Option<&[u8;32]>）
-    engine::export_backup(&dir, dek_guard.as_deref(), &dest_path)
+    let mut state = crypto.0.lock().unwrap(); // 串行化 + 取已解锁 DEK
+    let info = engine::export_backup(&dir, state.dek.as_deref(), &dest_path)?;
+    state.backed_up_session = true;
+    Ok(info)
+}
+
+/// 开/关「错 N 次销毁」。开启要求：本次解锁会话内成功备份过 + 记录的备份仍在且完整（强闸门）。
+#[tauri::command]
+pub fn set_destroy_enabled(app: AppHandle, crypto: State<Crypto>, enabled: bool) -> Result<(), CryptoError> {
+    let dir = config_dir(&app).map_err(internal_err)?;
+    let state = crypto.0.lock().unwrap();
+    engine::set_destroy_enabled(&dir, enabled, state.backed_up_session)
+}
+
+/// 销毁后「从空白重新开始」：清 sentinel + 隔离墓碑 + heng.security，下次 db_open 建全新空明文库。
+#[tauri::command]
+pub fn restart_after_destroy(app: AppHandle, crypto: State<Crypto>, db: State<Db>) -> Result<(), CryptoError> {
+    let dir = config_dir(&app).map_err(internal_err)?;
+    let mut state = crypto.0.lock().unwrap();
+    let mut conn = db.0.lock().unwrap();
+    *conn = None;
+    state.dek = None;
+    state.backed_up_session = false;
+    engine::restart_after_destroy(&dir)
 }
