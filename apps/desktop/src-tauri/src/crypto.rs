@@ -42,14 +42,17 @@ pub(crate) fn dek_hex(dek: &[u8; 32]) -> Zeroizing<String> {
 /// reconcile 的删 slot 撞车 → 封装文件指向的 slot 钥匙被删 = 库永久不可解）。命令全程持此锁互斥。
 pub struct Crypto(pub Mutex<Option<Zeroizing<[u8; 32]>>>);
 
-/// 解锁/封装失败的分流（§5 三类 + Internal 基建错）。UI 据此分屏：
-/// - WrongPassword：口令错/锁定 → 计入销毁计数（Phase 4）。
+/// 解锁/封装失败的分流（§5）。UI 据此分屏：
+/// - WrongPassword：口令错（芯片 NTE_PERM 拒）→ 计入销毁计数（Phase 4）。
+/// - Locked：口令连错过多触发芯片 DA 防爆破锁定（TPM_20_E_LOCKOUT 等）→ 等冷却 / 正确口令复位；
+///   **不计销毁**（芯片此时拒绝校验、并未判定口令对错；reboot 不一定解，DA 计数靠时间递减）。
 /// - Corrupt：信封/密文损坏 → “数据可能损坏”。
 /// - ChipUnavailable：芯片占用/句柄异常/钥匙缺失 → “芯片暂不可用，请重启”，**不计销毁**。
 /// - Internal：目录解析/IO/序列化等基建错（非解锁三态）。
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailClass {
     WrongPassword,
+    Locked,
     Corrupt,
     ChipUnavailable,
     Internal,
@@ -110,9 +113,12 @@ mod engine {
 
     // 关注的 NCrypt HRESULT（数值比较，避免 import 不确定性）。
     const NTE_BAD_DATA: u32 = 0x8009_0005; // OAEP 解包失败（口令对但密文坏）→ Corrupt
-    const NTE_PERM: u32 = 0x8009_0010; // 使用授权失败（错口令/锁定）→ WrongPassword
+    const NTE_PERM: u32 = 0x8009_0010; // 使用授权失败（错口令）→ WrongPassword
     const NTE_NOT_FOUND: u32 = 0x8009_0011; // 钥匙不存在 → 幂等删除 / ChipUnavailable
     const NTE_BAD_KEYSET: u32 = 0x8009_0016; // keyset 缺失 → ChipUnavailable
+    // TPM DA 防爆破锁定（口令连错过多，芯片临时拒绝使用钥匙）→ Locked（不计销毁；等冷却/正确口令复位）。
+    const TPM_20_E_LOCKOUT: u32 = 0x8028_0921; // TPM 2.0 RC_LOCKOUT
+    const TPM_E_DEFEND_LOCK_RUNNING: u32 = 0x8028_0210; // TPM 1.2 防御锁运行中
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum Slot {
@@ -148,7 +154,8 @@ mod engine {
     // ---- 错误构造 ----
     fn classify(code: u32) -> FailClass {
         match code {
-            NTE_PERM => FailClass::WrongPassword, // 注：DA 锁定也可能落此/类似码；Phase 3 UI 持 live code 细化
+            NTE_PERM => FailClass::WrongPassword,
+            TPM_20_E_LOCKOUT | TPM_E_DEFEND_LOCK_RUNNING => FailClass::Locked, // 连错触发芯片防爆破锁定
             NTE_BAD_DATA => FailClass::Corrupt,
             // 钥匙缺失：可能是芯片暂时态，也可能是 Clear TPM/换主板/封装文件拷到他机 = 钥匙永久没了（库不可解）。
             // 本期粗归 ChipUnavailable；Phase 3/4 UI 用保留的原始 code 区分「暂不可用·重启」与「永久销毁·终态屏」
@@ -838,6 +845,8 @@ mod engine {
         #[test]
         fn classify_maps_known_codes() {
             assert_eq!(classify(NTE_PERM), FailClass::WrongPassword);
+            assert_eq!(classify(TPM_20_E_LOCKOUT), FailClass::Locked);
+            assert_eq!(classify(TPM_E_DEFEND_LOCK_RUNNING), FailClass::Locked);
             assert_eq!(classify(NTE_BAD_DATA), FailClass::Corrupt);
             assert_eq!(classify(NTE_NOT_FOUND), FailClass::ChipUnavailable);
             assert_eq!(classify(NTE_BAD_KEYSET), FailClass::ChipUnavailable);

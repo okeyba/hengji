@@ -16,6 +16,8 @@ function msgOf(e: unknown): string {
     switch (e.class) {
       case 'WrongPassword':
         return '密码错误。';
+      case 'Locked':
+        return '密码连续输错，安全芯片已临时锁定（防爆破）。请隔段时间后用正确密码再试，别清空 TPM。';
       case 'Corrupt':
         return '数据或加密信封可能已损坏。';
       case 'ChipUnavailable':

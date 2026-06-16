@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
  */
 
 /** 失败分流（与 Rust FailClass 对齐）。UI 据此分屏。 */
-export type FailClass = 'WrongPassword' | 'Corrupt' | 'ChipUnavailable' | 'Internal';
+export type FailClass = 'WrongPassword' | 'Locked' | 'Corrupt' | 'ChipUnavailable' | 'Internal';
 
 /** 三态状态行判定输入。 */
 export interface SecurityStatus {

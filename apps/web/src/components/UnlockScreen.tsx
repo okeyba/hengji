@@ -56,14 +56,26 @@ export default function UnlockScreen({ onUnlocked }: { onUnlocked: () => Promise
 }
 
 function LockError({ err }: { err: CryptoError }) {
+  // 显示芯片返回的原始 HRESULT，便于诊断/支持（§5「持 live code 细化」）。
+  const code = err.code ? `（错误码 0x${err.code.toString(16)}）` : '';
   if (err.class === 'WrongPassword') {
-    return <p className="lock-err">密码错误，请重试。（多次输错可能触发系统级安全芯片锁定，需稍后再试）</p>;
+    return <p className="lock-err">密码错误，请重试。每次输错都会消耗安全芯片的一次防猜测额度，连错过多会被临时锁定。</p>;
+  }
+  if (err.class === 'Locked') {
+    return (
+      <div className="lock-err lock-err-block">
+        <strong>密码连续输错，安全芯片已临时锁定</strong>
+        <p className="small">
+          这是芯片的防爆破保护。请隔一段时间后用<strong>正确</strong>密码再试——一次成功即解除；期间别继续试错，重启不一定能解，更<strong>不要清空 TPM</strong>（会永久毁掉钥匙）。{code}
+        </p>
+      </div>
+    );
   }
   if (err.class === 'Corrupt') {
     return (
       <div className="lock-err lock-err-block">
         <strong>数据可能已损坏</strong>
-        <p className="small">加密信封或数据库文件读取失败，重复尝试无济于事。如有备份请从备份恢复。</p>
+        <p className="small">加密信封或数据库文件读取失败，重复尝试无济于事。如有备份请从备份恢复。{code}</p>
       </div>
     );
   }
@@ -71,12 +83,12 @@ function LockError({ err }: { err: CryptoError }) {
     return (
       <div className="lock-err lock-err-block">
         <strong>暂时无法访问安全芯片</strong>
-        <p className="small">多数情况是临时的——请重启电脑后再试一次。</p>
+        <p className="small">多数情况是临时的——请重启电脑后再试一次。{code}</p>
         <p className="small">
           但如果你曾清空过 TPM、更换主板/CPU，或把数据文件拷到了别的电脑，则封装钥匙已永久失效、本机再也无法解开——请改用备份恢复。
         </p>
       </div>
     );
   }
-  return <p className="lock-err">解锁失败：{err.message}</p>;
+  return <p className="lock-err">解锁失败：{err.message}{code}</p>;
 }
