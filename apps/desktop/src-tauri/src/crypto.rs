@@ -66,7 +66,7 @@ pub struct CryptoError {
     pub message: String,
 }
 
-/// 给 Phase 3 状态行的三态判定输入（强/弱/无 由 scheme + 本期仅 tpm-pcp 推出）。
+/// 给状态行的判定输入（三态由 scheme + 本期仅 tpm-pcp 推出）+ 备份新鲜度（阶段 4a）。
 #[derive(Serialize, Debug, Clone)]
 pub struct SecurityStatus {
     /// heng.dek.tpm 信封是否存在。
@@ -75,6 +75,17 @@ pub struct SecurityStatus {
     pub scheme: Option<String>,
     /// 能否打开 PCP 提供程序（§5 解锁前的芯片健康 ping）。
     pub tpm_available: bool,
+    /// 上次明文备份的时间（unix 秒）/ 路径（heng.security 记录，锁定态可读）。None＝从未备份。
+    pub last_backup_unix: Option<i64>,
+    pub last_backup_path: Option<String>,
+}
+
+/// export_backup 成功后回传 JS（路径 + 时间 + 行数，供 UI 显示新鲜度）。
+#[derive(Serialize, Debug, Clone)]
+pub struct BackupInfo {
+    pub path: String,
+    pub unix: i64,
+    pub rows: i64,
 }
 
 mod engine {
@@ -105,6 +116,8 @@ mod engine {
     const ENVELOPE_NEW: &str = "heng.dek.tpm.new";
     /// 明↔密迁移标记（含方向 + 信封）。存在＝迁移进行中；reconcile 据库文件头判定提交点哪侧后前滚/回滚。
     const MIGRATE_MARKER: &str = "heng.migrate";
+    /// 预解锁安全状态（销毁计数/开关 + 上次备份）。锁定态可读，故是 config_dir 明文文件（与信封同列）。
+    const SECURITY_FILE: &str = "heng.security";
     /// 迁移临时库（同目录＝同卷，便于原子 rename 顶替 heng.db）。
     const ENC_TMP: &str = "heng.db.enc.tmp";
     const PLAIN_TMP: &str = "heng.db.plain.tmp";
@@ -276,6 +289,163 @@ mod engine {
     fn read_marker(path: &Path) -> Result<MigrateMarker, CryptoError> {
         let data = std::fs::read(path).map_err(internal_io)?;
         serde_json::from_slice(&data).map_err(|e| internal(format!("parse marker: {e}")))
+    }
+
+    // ---- 预解锁安全状态 heng.security（销毁计数/开关 4b 用；上次备份 4a 用）----
+    #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+    struct SecurityFile {
+        #[serde(default)]
+        version: u32,
+        /// 绑当前信封哈希：不符＝信封换过（改密/重设）或被篡改 → 销毁相关字段视为新、归零。
+        #[serde(default)]
+        envelope_sha256: Option<String>,
+        #[serde(default)]
+        fail_count: u32,
+        #[serde(default)]
+        destroy_enabled: bool,
+        #[serde(default)]
+        last_backup_unix: Option<i64>,
+        #[serde(default)]
+        last_backup_path: Option<String>,
+        #[serde(default)]
+        last_backup_sha256: Option<String>,
+        #[serde(default)]
+        last_backup_rows: Option<i64>,
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        Sha256::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+    }
+    fn envelope_sha256(dir: &Path) -> Option<String> {
+        std::fs::read(dir.join(ENVELOPE)).ok().map(|b| sha256_hex(&b))
+    }
+    fn sha256_file(path: &Path) -> Result<String, CryptoError> {
+        Ok(sha256_hex(&std::fs::read(path).map_err(internal_io)?))
+    }
+
+    /// 读 heng.security，带安全默认：缺失/解析失败/信封哈希不符 → 销毁相关字段归零（删/篡改只能饶过、绝不导致销毁）。
+    /// 备份字段（last_backup_*）与信封无关，保留。
+    fn read_security(dir: &Path) -> SecurityFile {
+        let f: SecurityFile = std::fs::read(dir.join(SECURITY_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let cur = envelope_sha256(dir);
+        if cur.is_none() || f.envelope_sha256 != cur {
+            SecurityFile { fail_count: 0, destroy_enabled: false, envelope_sha256: cur, ..f }
+        } else {
+            f
+        }
+    }
+
+    /// 原子写 heng.security（写时盖上当前信封哈希，保持一致）。
+    fn write_security(dir: &Path, f: &SecurityFile) -> Result<(), CryptoError> {
+        let mut out = f.clone();
+        out.version = 1;
+        out.envelope_sha256 = envelope_sha256(dir);
+        let data = serde_json::to_vec_pretty(&out).map_err(|e| internal(format!("serialize security: {e}")))?;
+        let tmp = dir.join(format!("{SECURITY_FILE}.tmp"));
+        let mut fh = File::create(&tmp).map_err(internal_io)?;
+        fh.write_all(&data).map_err(internal_io)?;
+        fh.sync_all().map_err(internal_io)?;
+        rename_with_retry(&tmp, &dir.join(SECURITY_FILE))
+    }
+
+    // ---- 备份导出（明文，§7）----
+
+    /// 拒绝把备份导到应用数据目录里的 `heng.*`（活动库/信封/控制文件），防覆盖自毁。
+    /// dest 可能尚不存在 → canonicalize 其父目录后比对。
+    fn validate_backup_dest(dir: &Path, dest: &Path) -> Result<(), CryptoError> {
+        let parent = dest.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(dir);
+        let canon_parent = parent
+            .canonicalize()
+            .map_err(|e| internal(format!("无效的保存路径: {e}")))?;
+        // config_dir 的 canonicalize 失败 → 硬报错（绝不静默放行，否则可绕过 heng.* 防撞写穿活动库）。
+        // config_dir 在更早已 create_dir_all，正常必成功。
+        let canon_dir = dir
+            .canonicalize()
+            .map_err(|e| internal(format!("应用数据目录不可访问: {e}")))?;
+        if canon_parent == canon_dir {
+            if let Some(name) = dest.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("heng.") {
+                    return Err(internal("不能把备份导出到应用数据目录的 heng.* 文件（会覆盖活动数据）".into()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 统计某库（schema=main/bak）所有用户表的总行数（备份新鲜度/4b 销毁前完整性校验用）。
+    fn count_user_rows(conn: &Connection, schema: &str) -> Result<i64, CryptoError> {
+        let tables: Vec<String> = {
+            let q = format!("SELECT name FROM {schema}.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+            let mut st = conn.prepare(&q).map_err(|e| corrupt(&format!("list tables: {e}")))?;
+            let rows = st.query_map([], |r| r.get::<_, String>(0)).map_err(|e| corrupt(&format!("list: {e}")))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| corrupt(&format!("list: {e}")))?
+        };
+        let mut total = 0i64;
+        for t in &tables {
+            let n: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {schema}.\"{t}\""), [], |r| r.get(0))
+                .map_err(|e| corrupt(&format!("count {t}: {e}")))?;
+            total += n;
+        }
+        Ok(total)
+    }
+
+    /// 导出一份**明文**备份到 dest（关闭加密的等价物）。加密库须传已解锁 DEK；明文库 dek=None。
+    /// 统一走 sqlcipher_export（不分明/密两套）：写 `.tmp`→export+校验→DETACH+close→无 WAL 边车→原子 rename。
+    /// 成功后把 last_backup_*（含 sha256+行数，供 4b 销毁前重验）写回 heng.security。
+    pub(super) fn export_backup(dir: &Path, dek: Option<&[u8; 32]>, dest_str: &str) -> Result<BackupInfo, CryptoError> {
+        reconcile(dir);
+        let db = dir.join(DB_FILE);
+        let encrypted = dir.join(ENVELOPE).exists();
+        if encrypted && dek.is_none() {
+            return Err(internal("数据库已加密但尚未解锁，无法导出备份".into()));
+        }
+        let dest = Path::new(dest_str);
+        validate_backup_dest(dir, dest)?;
+        // 临时文件放 dest 同目录（同卷 → 原子 rename）。
+        let tmp = {
+            let fname = format!(
+                "{}.heng-backup.tmp",
+                dest.file_name().and_then(|n| n.to_str()).unwrap_or("backup")
+            );
+            match dest.parent().filter(|p| !p.as_os_str().is_empty()) {
+                Some(d) => d.join(fname),
+                None => std::path::PathBuf::from(fname),
+            }
+        };
+        let _ = std::fs::remove_file(&tmp);
+        clean_sidecars(&tmp);
+
+        let rows = {
+            let src = Connection::open(&db).map_err(|e| corrupt(&format!("open db: {e}")))?;
+            if let Some(d) = dek {
+                let key = Zeroizing::new(format!("PRAGMA key = \"x'{}'\";", &*super::dek_hex(d)));
+                src.execute_batch(key.as_str()).map_err(|e| corrupt(&format!("pragma key: {e}")))?;
+            }
+            let _ = src.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            src.execute("ATTACH DATABASE ?1 AS bak KEY ''", [tmp.to_string_lossy().as_ref()])
+                .map_err(|e| corrupt(&format!("attach bak: {e}")))?;
+            export_into(&src, "bak")?;
+            verify_attached(&src, "bak")?;
+            let rows = count_user_rows(&src, "main")?;
+            src.execute_batch("DETACH DATABASE bak;").map_err(|e| corrupt(&format!("detach: {e}")))?;
+            src.close().map_err(|(_, e)| corrupt(&format!("close: {e}")))?;
+            rows
+        };
+        clean_sidecars(&tmp); // 备份是单文件，清掉任何残留边车
+        rename_with_retry(&tmp, dest)?;
+
+        let unix = now_unix();
+        let mut sec = read_security(dir);
+        sec.last_backup_unix = Some(unix);
+        sec.last_backup_path = Some(dest.to_string_lossy().into_owned());
+        sec.last_backup_sha256 = Some(sha256_file(dest)?);
+        sec.last_backup_rows = Some(rows);
+        write_security(dir, &sec)?;
+        Ok(BackupInfo { path: dest.to_string_lossy().into_owned(), unix, rows })
     }
 
     /// 库文件头是否为明文 SQLite。文件缺失／太短 → 视为「非明文」（保守：不会把损坏库当明文去开）。
@@ -695,10 +865,13 @@ mod engine {
             Err(_) if envelope.exists() => (true, None), // 文件在但坏 → 仍算已加密（损坏态）
             Err(_) => (false, None),
         };
+        let sec = read_security(dir);
         SecurityStatus {
             encrypted,
             scheme,
             tpm_available: open_provider().is_ok(),
+            last_backup_unix: sec.last_backup_unix,
+            last_backup_path: sec.last_backup_path,
         }
     }
 
@@ -923,6 +1096,71 @@ mod engine {
             let _ = std::fs::remove_dir_all(&dir);
         }
 
+        /// 备份导出（明文库 + 加密库两条路）：备份恒明文、数据+user_version 保留、记 heng.security。**0 DA、无 TPM、自动跑**
+        /// （加密路用假信封 + 已知 DEK：export_backup 只凭信封存在判加密 + 用传入 DEK 解，不碰真 TPM）。
+        #[test]
+        fn backup_roundtrip_plaintext_and_encrypted() {
+            let dir = std::env::temp_dir().join(format!("heng-backup-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = dir.join(DB_FILE);
+            // —— 明文库导出 ——
+            {
+                let conn = open_db(&db, None).unwrap();
+                conn.execute_batch("PRAGMA user_version=9; CREATE TABLE t(x TEXT); INSERT INTO t VALUES('a'),('b');").unwrap();
+            }
+            let dest1 = dir.join("backup1.db");
+            let info1 = export_backup(&dir, None, dest1.to_str().unwrap()).unwrap();
+            assert_eq!(info1.rows, 2);
+            assert!(db_is_plaintext(&dest1), "备份必须是明文");
+            {
+                let conn = open_db(&dest1, None).unwrap();
+                assert_eq!(conn.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+                assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 9);
+            }
+            let sec = read_security(&dir);
+            assert_eq!(sec.last_backup_path.as_deref(), Some(dest1.to_string_lossy().as_ref()));
+            assert!(sec.last_backup_unix.is_some() && sec.last_backup_sha256.is_some());
+
+            // —— 加密库导出（假信封 + 已知 DEK）——
+            std::fs::remove_file(&db).unwrap();
+            let dek = [0x22u8; 32];
+            {
+                let conn = open_db(&db, Some(&encode_hex(&dek))).unwrap();
+                conn.execute_batch("PRAGMA user_version=9; CREATE TABLE t(x TEXT); INSERT INTO t VALUES('a'),('b'),('c');").unwrap();
+            }
+            std::fs::write(dir.join(ENVELOPE), b"dummy-envelope").unwrap();
+            let dest2 = dir.join("backup2.db");
+            let info2 = export_backup(&dir, Some(&dek), dest2.to_str().unwrap()).unwrap();
+            assert_eq!(info2.rows, 3);
+            assert!(db_is_plaintext(&dest2), "加密库的备份也必须是明文（关闭加密的等价物）");
+            {
+                let conn = open_db(&dest2, None).unwrap();
+                assert_eq!(conn.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+                assert_eq!(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 9);
+            }
+            // 加密库未传 DEK → 拒
+            assert!(export_backup(&dir, None, dir.join("x.db").to_str().unwrap()).is_err());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// 备份目标路径防撞：拒绝导到应用数据目录里的 heng.* 控制文件，允许同目录非 heng.* 名。
+        #[test]
+        fn backup_rejects_control_paths() {
+            let dir = std::env::temp_dir().join(format!("heng-backup-reject-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            {
+                let conn = open_db(&dir.join(DB_FILE), None).unwrap();
+                conn.execute_batch("CREATE TABLE t(x)").unwrap();
+            }
+            for name in ["heng.db", "heng.dek.tpm", "heng.security", "heng.migrate"] {
+                assert!(export_backup(&dir, None, dir.join(name).to_str().unwrap()).is_err(), "{name} 应被拒");
+            }
+            assert!(export_backup(&dir, None, dir.join("mybackup.db").to_str().unwrap()).is_ok());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
         // ---- 真 TPM 集成测试（消耗用户机芯片 + DA；默认 #[ignore]） ----
         // 这些用固定 slot a/b ⇒ **必须串行**：手动跑
         //   build-tauri.bat 同环境下 `cargo test -- --ignored --test-threads=1`
@@ -1142,4 +1380,13 @@ pub fn lock(crypto: State<Crypto>, db: State<Db>) -> Result<(), String> {
     *dek = None;
     *conn = None;
     Ok(())
+}
+
+/// 导出一份未加密备份到用户选定路径（dest_path 由 JS 侧原生「另存为」对话框给定）。
+/// 加密库用已解锁 DEK 解出明文写出；未加密库直接明文导出。持 Crypto 锁串行化（不与迁移 rename 撞）。
+#[tauri::command]
+pub fn export_backup(app: AppHandle, crypto: State<Crypto>, dest_path: String) -> Result<BackupInfo, CryptoError> {
+    let dir = config_dir(&app).map_err(internal_err)?;
+    let dek_guard = crypto.0.lock().unwrap(); // 串行化 + 取已解锁 DEK（as_deref → Option<&[u8;32]>）
+    engine::export_backup(&dir, dek_guard.as_deref(), &dest_path)
 }

@@ -2,13 +2,22 @@ import { useEffect, useState } from 'react';
 import type { Repository, StoredSetting } from '@app/store';
 import {
   changePassword,
+  exportBackup,
   isCryptoError,
+  pickBackupPath,
   removePassword,
   securityStatus,
   setPassword,
 } from '@app/store/crypto';
 import type { SecurityStatus } from '@app/store/crypto';
 import { APP_SCOPE, AUTOLOCK_KEY, autoLockMinOf } from '../settings';
+
+/** 上次备份多久前（unix 秒 → 人话）。 */
+function backupAge(unix: number | null | undefined): string {
+  if (unix == null) return '从未备份';
+  const days = Math.floor((Date.now() / 1000 - unix) / 86400);
+  return days <= 0 ? '今天' : `${days} 天前`;
+}
 
 /** 把捕获到的错误转成给用户看的一句话（区分加密三类失败 + 基建错）。 */
 function msgOf(e: unknown): string {
@@ -33,8 +42,8 @@ type Mode = 'idle' | 'set' | 'change' | 'remove';
 
 /**
  * 设置 →「安全」卡（仅桌面）。三态状态行（未加密 / 已加密·安全芯片强 / 已加密但芯片不可用·信封损坏）+
- * 设/改/移除密码 + 自动锁。口令由用户原生输入。set/remove 会触发 Rust 侧明↔密库原子迁移（可能耗时，显示处理中）。
- * 「错 N 次销毁」+ 备份导出留下一阶段（Phase 4）。
+ * 设/改/移除密码 + 自动锁 + 备份导出（明文，关闭加密的等价物）。口令由用户原生输入。
+ * set/remove 触发 Rust 侧明↔密库原子迁移。「错 N 次销毁」留 4b。
  */
 export default function SecurityCard({
   repo,
@@ -54,6 +63,8 @@ export default function SecurityCard({
   const [oldPw, setOldPw] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
 
   async function refresh(): Promise<void> {
     try {
@@ -133,6 +144,30 @@ export default function SecurityCard({
       setErr(msgOf(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function doBackup(): Promise<void> {
+    if (backupBusy) return;
+    setBackupMsg(null);
+    const stamp = new Date().toISOString().slice(0, 10);
+    let dest: string | null;
+    try {
+      dest = await pickBackupPath(`衡记备份-${stamp}.db`);
+    } catch (e) {
+      setBackupMsg(msgOf(e));
+      return;
+    }
+    if (!dest) return; // 用户取消对话框
+    setBackupBusy(true);
+    try {
+      const info = await exportBackup(dest); // Rust：解密导出明文 + 记录新鲜度
+      await refresh();
+      setBackupMsg(`✓ 已导出 ${info.rows} 条记录到 ${info.path}`);
+    } catch (e) {
+      setBackupMsg(msgOf(e));
+    } finally {
+      setBackupBusy(false);
     }
   }
 
@@ -262,7 +297,28 @@ export default function SecurityCard({
         </div>
       )}
 
-      <p className="muted small sec-todo">「输错多次自动销毁」与「加密备份导出」将在后续版本提供。</p>
+      {/* —— 备份导出（明文 · 关闭加密的等价物）—— */}
+      <div className="sec-backup">
+        <div className="sec-backup-head">
+          <button className="btn" disabled={backupBusy} onClick={() => void doBackup()}>
+            {backupBusy ? '导出中…' : '导出未加密备份'}
+          </button>
+          <span className={`small${status?.last_backup_unix == null ? ' sec-stale' : ' muted'}`}>
+            上次备份：{backupAge(status?.last_backup_unix)}
+          </span>
+        </div>
+        {status?.last_backup_path && <p className="muted small sec-backup-path">于 {status.last_backup_path}</p>}
+        <p className="muted small">
+          备份是<strong>关闭加密的等价物</strong>、不受密码保护——请存到 U 盘等离线介质、别和电脑放一起。
+          这也是忘记密码或数据被销毁后<strong>唯一</strong>能找回数据的途径。
+        </p>
+        {encrypted && status?.last_backup_path && (
+          <p className="sec-warn-line small">⚠ 存在 1 份未加密备份于 {status.last_backup_path}</p>
+        )}
+        {backupMsg && <p className="muted small">{backupMsg}</p>}
+      </div>
+
+      <p className="muted small sec-todo">「输错多次自动销毁」将在下一步提供。</p>
     </div>
   );
 }

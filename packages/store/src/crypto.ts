@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 
 /**
  * 本地加密命令的 JS 封装（仅桌面 / Tauri runtime 有效）。
@@ -10,7 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 /** 失败分流（与 Rust FailClass 对齐）。UI 据此分屏。 */
 export type FailClass = 'WrongPassword' | 'Locked' | 'Corrupt' | 'ChipUnavailable' | 'Internal';
 
-/** 三态状态行判定输入。 */
+/** 三态状态行判定输入 + 备份新鲜度（阶段 4a）。 */
 export interface SecurityStatus {
   /** 信封是否存在（已加密；含信封损坏的「已加密但坏」态——此时 scheme 为 null）。 */
   encrypted: boolean;
@@ -18,6 +19,16 @@ export interface SecurityStatus {
   scheme: string | null;
   /** 能否打开安全芯片提供程序（解锁前的健康 ping）。 */
   tpm_available: boolean;
+  /** 上次明文备份时间（unix 秒）/ 路径；null = 从未备份。 */
+  last_backup_unix: number | null;
+  last_backup_path: string | null;
+}
+
+/** export_backup 成功回传。 */
+export interface BackupInfo {
+  path: string;
+  unix: number;
+  rows: number;
 }
 
 /** 跨 IPC 的加密错误：粗分类 + 原始 HRESULT（供细化）+ 文案。 */
@@ -39,3 +50,14 @@ export const changePassword = (oldPassword: string, newPassword: string): Promis
   invoke('change_password', { oldPassword, newPassword });
 export const removePassword = (password: string): Promise<void> => invoke('remove_password', { password });
 export const lock = (): Promise<void> => invoke('lock');
+
+/** 弹原生「另存为」对话框选备份保存路径；用户取消返回 null。 */
+export const pickBackupPath = (defaultName: string): Promise<string | null> =>
+  save({
+    title: '导出未加密备份',
+    defaultPath: defaultName,
+    filters: [{ name: 'SQLite 数据库', extensions: ['db'] }],
+  });
+
+/** 导出明文备份到 destPath（实际解密+写文件在 Rust 内完成）。 */
+export const exportBackup = (destPath: string): Promise<BackupInfo> => invoke('export_backup', { destPath });
