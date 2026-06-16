@@ -6,6 +6,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 use serde_json::{Map, Value as Json};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
@@ -87,20 +88,46 @@ fn run_exec(conn: &Connection, sql: &str, params: &[Json]) -> rusqlite::Result<(
 
 // ---- commands ----
 
-/// 打开（或创建）本地库，PRAGMA key 必须为开库第一条；随后 WAL/外键/busy_timeout。
-/// path 形如 'sqlite:heng.db'，相对应用配置目录（与原 tauri-plugin-sql 同一位置，保留既有数据）。
-#[tauri::command]
-pub fn db_open(app: AppHandle, db: State<Db>, path: String, key: Option<String>) -> Result<(), String> {
-    let file = path.strip_prefix("sqlite:").unwrap_or(&path);
+/// 应用配置目录（%APPDATA%\<bundle id>\）。库与封装文件（heng.dek.tpm）都放这里。
+/// 阶段 2 crypto 命令与 db_open 共用，确保 DEK 封装文件与库同目录（§9 同卷原子替换前提）。
+pub fn config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let full = dir.join(file);
-    let conn = Connection::open(&full).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// 是否为 64 位十六进制（raw 32-byte DEK 的 hex 表示）。
+fn is_dek_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 打开（或创建）SQLite/SQLCipher 连接。
+/// - key=Some(dek_hex)：用 SQLCipher **原始密钥** 语法 `x'<hex>'` —— 把 DEK 当 32 字节原始密钥直接用、
+///   跳过 PBKDF2 派生（DEK 本就是随机密钥），且必须是开库第一条 PRAGMA。
+/// - key=None：明文库。
+/// 随后统一 WAL/外键/busy_timeout。供 db_open 命令与测试共用。
+pub fn open_db(full: &Path, key: Option<&str>) -> Result<Connection, String> {
+    let conn = Connection::open(full).map_err(|e| e.to_string())?;
     if let Some(k) = key {
-        conn.pragma_update(None, "key", &k).map_err(|e| e.to_string())?; // 必须第一条
+        if !is_dek_hex(k) {
+            return Err("invalid DEK: expected 64 hex chars".into());
+        }
+        // k 已校验为纯十六进制 → 字符串插值无注入风险。raw-key 必须先于其它 PRAGMA。
+        conn.execute_batch(&format!("PRAGMA key = \"x'{k}'\";"))
+            .map_err(|e| e.to_string())?;
     }
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")
         .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+/// 打开（或创建）本地库。path 形如 'sqlite:heng.db'，相对应用配置目录
+/// （与原 tauri-plugin-sql 同一位置，保留既有数据）。key=Some(dek_hex) 开 SQLCipher 密文库。
+#[tauri::command]
+pub fn db_open(app: AppHandle, db: State<Db>, path: String, key: Option<String>) -> Result<(), String> {
+    let file = path.strip_prefix("sqlite:").unwrap_or(&path);
+    let full = config_dir(&app)?.join(file);
+    let conn = open_db(&full, key.as_deref())?;
     *db.0.lock().unwrap() = Some(conn);
     Ok(())
 }
@@ -171,6 +198,50 @@ mod tests {
         assert_eq!(o["b"], Json::from(7i64));
         assert_eq!(o["c"], Json::from(1.5f64));
         assert_eq!(o["d"], Json::Null);
+    }
+
+    #[test]
+    fn sqlcipher_raw_key_roundtrip() {
+        // 用随机 32 字节 DEK 直接加密临时库（不经 TPM）：建→关→对 key 重开读回；错 key 读不出。
+        // 验证 open_db 的 raw-key（x'..'）路径 + SQLCipher 真加密。0 DA、可自动跑。
+        let base = std::env::temp_dir().join(format!("heng-sqlcipher-test-{}.db", std::process::id()));
+        let cleanup = |p: &Path| {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}-wal", p.display())));
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}-shm", p.display())));
+        };
+        cleanup(&base);
+        let dek = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        {
+            let conn = open_db(&base, Some(dek)).unwrap();
+            conn.execute_batch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES('secret-marker');").unwrap();
+        }
+        // 落盘文件头不是明文 "SQLite format 3\0"（真加密）。
+        let head = std::fs::read(&base).unwrap();
+        assert_ne!(&head[..16], b"SQLite format 3\0", "库头不应是明文 SQLite");
+        // 对 key 重开 → 读回。
+        {
+            let conn = open_db(&base, Some(dek)).unwrap();
+            let v: String = conn.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+            assert_eq!(v, "secret-marker");
+        }
+        // 错 key → 打不开。注意 open_db 在 journal_mode=WAL 时即读库 → 解密失败会在 open_db 内就报
+        // （fail-fast）；最迟也在首次查询失败。两种都算“被拒”。
+        {
+            let wrong = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+            let denied = match open_db(&base, Some(wrong)) {
+                Err(_) => true, // 开库即拒
+                Ok(conn) => conn.query_row("SELECT x FROM t", [], |r| r.get::<_, String>(0)).is_err(),
+            };
+            assert!(denied, "错 key 不应能读出明文");
+        }
+        cleanup(&base);
+    }
+
+    #[test]
+    fn rejects_bad_dek_hex() {
+        assert!(open_db(Path::new(":memory:"), Some("tooshort")).is_err());
+        assert!(open_db(Path::new(":memory:"), Some(&"z".repeat(64))).is_err());
     }
 
     #[test]
