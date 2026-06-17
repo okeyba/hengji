@@ -34,6 +34,7 @@ Running the core packages and the web app only needs Node and pnpm; you only nee
 3. **Only when you want to run/package the desktop app** do you additionally need:
    - **Rust** + **MSVC** (the C++ build tools on Windows — when installing Visual Studio Build Tools, check "Desktop development with C++").
    - **WebView2** Runtime (usually preinstalled on Win11).
+   - **Building from current source also needs the SQLCipher toolchain**: the desktop persistence layer uses a self-written rusqlite + SQLCipher bridge (`bundled-sqlcipher-vendored-openssl`, which compiles the SQLCipher C source + vendored OpenSSL on the fly). On Windows, build inside a **`vcvars64.bat` environment** and install **Strawberry Perl** (the vendored OpenSSL configure scripts need perl — **must be Strawberry Perl, not msys perl**). **nasm is NOT needed.** The first build compiles OpenSSL once (~8 minutes, one-time; `tauri dev` and `cargo test` have different cache keys, so each compiles it once). For the local-encryption design, see [`design/en/encryption.md`](../design/en/encryption.md).
 
 If you only want to read the engine, run the tests, or tweak the UI, just skip step 3.
 

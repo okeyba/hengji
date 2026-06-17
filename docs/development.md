@@ -34,6 +34,7 @@
 3. **只有要跑/打包桌面端时**才额外需要：
    - **Rust** + **MSVC**（Windows 上的 C++ 构建工具，装 Visual Studio Build Tools 时勾选「使用 C++ 的桌面开发」）。
    - **WebView2** Runtime（Win11 一般自带）。
+   - **从当前源码构建还需 SQLCipher 工具链**：桌面端的持久层用自写 rusqlite + SQLCipher 桥（`bundled-sqlcipher-vendored-openssl`，会现编 SQLCipher C 源 + vendored OpenSSL）。Windows 上需在 **`vcvars64.bat` 环境**里构建，并装 **Strawberry Perl**（vendored OpenSSL 的配置脚本要 perl——**必须 Strawberry Perl，不是 msys perl**）。**不需要 nasm。** 首次会编一次 OpenSSL（~8 分钟，一次性；`tauri dev` 与 `cargo test` 缓存键不同，各编一次）。本地加密设计见 [`design/encryption.md`](design/encryption.md)。
 
 只想读引擎、跑测试、改 UI 的话，跳过第 3 条即可。
 

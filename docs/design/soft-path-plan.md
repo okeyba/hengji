@@ -126,6 +126,15 @@
 
 **验收（§12）**：改密/移除/迁移**任意时点 kill-9 仍可用旧或新态**（分别覆盖三路径）；错 N 次确实销毁；坏块/芯片不可用**不**误触销毁；磁盘扫描无意外明文窗口。**风险**：高（原子性 + 误删兜底是命门）。
 
+> **落地记录（2026-06-16，分支 `feat/local-encryption`，本地未推）——阶段 4 拆两步，且销毁被否决：**
+> - **迁移（§9）✅ 已在阶段 3 提前落地**（设密码/移除密码端到端依赖它，见阶段 3 落地块）。
+> - **4a 备份导出 ✅**（commit `d9ac5fa`）：`export_backup` 命令（统一 `sqlcipher_export` 导明文备份到原生「另存为」路径、temp→verify→rename、无 WAL 边车、路径防撞拒 `heng.*`、DEK `Zeroizing`）+ 预解锁状态文件 `heng.security`（绑信封哈希、含 `last_backup_*`）+ SecurityCard 备份区（新鲜度 + 常驻警示）+ tauri-plugin-dialog。
+> - **4b 销毁 ❌ 已弃用 → 改用户主动「清空数据」**（commit `5be808e` 去掉，前置 `644d55e` 是已弃的旧自动销毁版本，仅留作历史）：原「软件自管错 N 次计数 → 删钥匙 + 隔离区后悔药 + 销毁终态屏 + sentinel + FailClass::Destroyed」**整套撤除（净删 ~450 行）**。**用户拍板理由**：本机 fTPM DA **~3 次即锁**（< N=5）、`Locked` 不计数 → 自动销毁慢且被芯片抢占，且带误删/反噬风险；锁定（防别人解密）归芯片管、删除应是用户主动行为。
+>   - 改成 **`engine::wipe`**（删 TPM 两 slot〔小重试，剩良性孤儿自愈〕+ 信封 + 库 + 边车 + `heng.security` + 历史隔离残留）+ **`wipe_data` 命令**（加密时先 `unlock` **验对口令才删**、错则原样返回不删；明文时无口令仅二次确认，**直接永久删、无后悔药**）+ SecurityCard「清空全部数据」按钮 + `App.handleWiped`（清空 → `resetDesktopRepo` → 开全新空明文库 → 回总表）。
+>   - `reconcile` 回**纯迁移自愈**（去掉销毁短路）。详见 [`encryption.md`](encryption.md) §5。
+> - **测试**：`cargo test` **16 passed / 4 ignored**（删 4 个销毁测试 + 加 `wipe_removes_all_local_data`）；3 维对抗式 review confirmed 3 全修（wipe 删 slot 加重试 / 清空后不在卸载组件 setState / 用 ENVELOPE 常量）。
+> - **kill-9 注入实测 / 磁盘扫描无明文窗口**：留到真机冒烟（指南见 `~/.claude/plans/hengji-followups.md`）；自动测试已覆盖进程内回滚自愈。
+
 ---
 
 ## 阶段 5 · 文档 + 验收
@@ -133,6 +142,12 @@
 - README/CI 构建前提（Strawberry Perl、无 nasm、vendored-openssl 走 vcvars）。
 - `encryption.md` 威胁模型用户向诚实披露收口（§0/§1/§5/§10）。
 - 全量验收 + 回归。
+
+> **落地记录（2026-06-16，本地未推）——文档收口完成：**
+> - **`encryption.md` 重写为「实现说明（as-built）」**：软路定案、随机 DEK + PCP 封装、本机 fTPM DA 抢占（§4）、删除＝用户主动「清空数据」非自动销毁（§5）、soft-path 局限诚实定位、构建前提（§10）、测试（§11）、设计演变附录。**中英双语**（新增 [`en/encryption.md`](en/encryption.md)）。
+> - **本文（soft-path-plan）** 阶段 4/5 标注实际落地（本块）。
+> - **构建前提** 写进 [`../development.md`](../development.md) + [`../en/development.md`](../en/development.md)（前置环境节加 SQLCipher：Strawberry Perl + vcvars + `bundled-sqlcipher-vendored-openssl`、不需 nasm）。
+> - **待**：真机冒烟（全流程含「清空数据」）→ 用户定是否 push（整条 v3 才到「可 push」、仍等用户点头、不自己推）。
 
 ---
 
