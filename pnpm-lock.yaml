@@ -63,9 +63,12 @@ importers:
       '@app/core':
         specifier: workspace:*
         version: link:../core
-      '@tauri-apps/plugin-sql':
+      '@tauri-apps/api':
         specifier: ^2.0.0
-        version: 2.4.0
+        version: 2.11.0
+      '@tauri-apps/plugin-dialog':
+        specifier: ^2.0.0
+        version: 2.7.1
     devDependencies:
       '@types/node':
         specifier: ^24
@@ -750,8 +753,8 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
-  '@tauri-apps/plugin-sql@2.4.0':
-    resolution: {integrity: sha512-SIICc5JlnK6OrBZzOw7MmhXHPlmASpt5zLWIu10WW4kLr5cDYOXHdV2MoCgYQkgZLQfyBYgF3SQa5XCisUiQkw==}
+  '@tauri-apps/plugin-dialog@2.7.1':
+    resolution: {integrity: sha512-OK1UBXYt+ojcmxMktzzuyonYIFta8CmAASpX+CA+DTGK24KlHjhYI6x2iOJ/TjZF4N7/ACK1oFmEOjIY9IhzOQ==}
 
   '@types/babel__core@7.20.5':
     resolution: {integrity: sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==}
@@ -1614,7 +1617,7 @@ snapshots:
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.2
       '@tauri-apps/cli-win32-x64-msvc': 2.11.2
 
-  '@tauri-apps/plugin-sql@2.4.0':
+  '@tauri-apps/plugin-dialog@2.7.1':
     dependencies:
       '@tauri-apps/api': 2.11.0
 

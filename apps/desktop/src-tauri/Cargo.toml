@@ -13,6 +13,14 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+# 阶段 4a 备份导出：原生「另存为」对话框选路径（实际写文件仍在 Rust 内完成，不引 tauri-plugin-fs）。
+tauri-plugin-dialog = "2"
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 阶段 2 加密：NCrypt PCP 封装 DEK（Spike #2 已验）。仅 Windows 桌面用。
+sha2 = "0.10"
+zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

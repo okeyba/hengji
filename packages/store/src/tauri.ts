@@ -1,4 +1,4 @@
-import Database from '@tauri-apps/plugin-sql';
+import { TauriDb } from './tauri-bridge';
 import { assertBalanced } from '@app/core';
 import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Posting, Product, Purchase, Reconciliation, Settlement, Supplier, Transaction } from '@app/core';
 import type {
@@ -76,26 +76,32 @@ import { migrate } from './migrations';
 
 const defaultClock: Clock = () => new Date().toISOString();
 
+/** 一条带参数的 SQL，用于 db.batch 把多条写打包进一把事务。 */
+type Stmt = { sql: string; params: unknown[] };
+
 /**
- * Tauri 桌面实现：经 tauri-plugin-sql（sqlx）访问本地 SQLite 文件。
+ * Tauri 桌面实现：经自写 rusqlite + SQLCipher 桥（./tauri-bridge → Rust db_* 命令）访问本地库。
  * schema 由 ./migrations 版本化管理（load 时自动迁移，含遗留库回填默认账本）；
- * 行映射与 SqliteRepository 共用，占位符用 sqlx 的 $1..$N。
+ * 行映射与 SqliteRepository 共用，占位符 $1..$N 由 Rust 侧翻成 ?N。
  * 只能在 Tauri runtime 内运行（走 IPC 到 Rust），行为契约由
  * SqliteRepository 的共享契约测试背书（同一 SQL 形状）。
  */
 export class TauriSqlRepository implements Repository {
   private constructor(
-    private readonly db: Database,
+    private readonly db: TauriDb,
     private readonly now: Clock,
   ) {}
 
-  /** 打开（或创建）本地 SQLite、自动迁移 schema。path 形如 'sqlite:heng.db'，相对应用配置目录。 */
-  static async load(path = 'sqlite:heng.db', opts: { now?: Clock } = {}): Promise<TauriSqlRepository> {
-    const db = await Database.load(path);
-    // PRAGMA journal_mode 会返回一行结果，必须走 select
-    await db.select('PRAGMA journal_mode = WAL');
-    await db.select('PRAGMA foreign_keys = ON');
-    await db.select('PRAGMA busy_timeout = 5000');
+  /**
+   * 打开（或创建）本地 SQLite、自动迁移 schema。path 形如 'sqlite:heng.db'，相对应用配置目录。
+   * `encrypted=true`：库已加密，Rust 用已解锁 DEK（须先 unlock）开 SQLCipher 密文库；否则开明文。
+   * WAL/外键/busy_timeout 由 Rust 侧 db_open 设置。
+   */
+  static async load(
+    path = 'sqlite:heng.db',
+    opts: { now?: Clock; encrypted?: boolean } = {},
+  ): Promise<TauriSqlRepository> {
+    const db = await TauriDb.open(path, opts.encrypted ?? false);
     await migrate({
       run: async (sql) => {
         await db.execute(sql);
@@ -115,11 +121,8 @@ export class TauriSqlRepository implements Repository {
     await this.db.close();
   }
 
-  // 注：tauri-plugin-sql 底层是 sqlx 连接池（多连接）。裸 BEGIN/COMMIT 会被池分发到
-  // 不同连接，导致开 BEGIN 的连接留下未提交写事务、锁死整库（SQLITE_BUSY: database is
-  // locked）。因此多写操作改为顺序 autocommit——单用户桌面串行写，不会自锁。
-  // 已知限制：一笔交易的多条写非原子；进程在两条写之间崩溃的极端情况下可能留下不完整交易。
-  // 后续若 plugin 支持单连接事务、或迁移到自管 Rust SQL 层，再恢复跨语句原子性。
+  // 多写原子性（1b）：自写桥是单连接，多条写经 db.batch 包进一把 BEGIN/COMMIT（要么全成、
+  // 要么全不写），修掉旧 tauri-plugin-sql 连接池下放弃事务、崩溃可能留半截交易的老债。
 
   private async exists(sql: string, params: unknown[]): Promise<boolean> {
     const rows = await this.db.select<unknown[]>(sql, params);
@@ -246,22 +249,22 @@ export class TauriSqlRepository implements Repository {
     assertBalanced(txn.postings);
     await this.assertSameBook(txn);
     const ts = this.now();
-    await this.db.execute(
-      `INSERT INTO transactions (id, book_id, date, payee, note, tags, created_at, updated_at, deleted)
+    await this.db.batch([
+      {
+        sql: `INSERT INTO transactions (id, book_id, date, payee, note, tags, created_at, updated_at, deleted)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0)`,
-      [txn.id, txn.bookId, txn.date, txn.payee, txn.note, JSON.stringify(txn.tags), ts, ts],
-    );
-    await this.insertPostings(txn.id, txn.postings);
+        params: [txn.id, txn.bookId, txn.date, txn.payee, txn.note, JSON.stringify(txn.tags), ts, ts],
+      },
+      ...this.postingStmts(txn.id, txn.postings),
+    ]);
     return (await this.getTransaction(txn.id))!;
   }
 
-  private async insertPostings(txnId: string, postings: Posting[]): Promise<void> {
-    for (const p of postings) {
-      await this.db.execute(
-        'INSERT INTO postings (id, txn_id, account_id, amount, currency, cleared) VALUES ($1, $2, $3, $4, $5, $6)',
-        [p.id, txnId, p.accountId, p.amount, p.currency, p.cleared ? 1 : 0],
-      );
-    }
+  private postingStmts(txnId: string, postings: Posting[]): Stmt[] {
+    return postings.map((p) => ({
+      sql: 'INSERT INTO postings (id, txn_id, account_id, amount, currency, cleared) VALUES ($1, $2, $3, $4, $5, $6)',
+      params: [p.id, txnId, p.accountId, p.amount, p.currency, p.cleared ? 1 : 0],
+    }));
   }
 
   async getTransaction(id: string): Promise<StoredTransaction | null> {
@@ -322,16 +325,14 @@ export class TauriSqlRepository implements Repository {
     assertBalanced(txn.postings);
     await this.assertSameBook(txn);
     const ts = this.now();
-    await this.db.execute('UPDATE transactions SET date=$1, payee=$2, note=$3, tags=$4, updated_at=$5 WHERE id=$6', [
-      txn.date,
-      txn.payee,
-      txn.note,
-      JSON.stringify(txn.tags),
-      ts,
-      id,
+    await this.db.batch([
+      {
+        sql: 'UPDATE transactions SET date=$1, payee=$2, note=$3, tags=$4, updated_at=$5 WHERE id=$6',
+        params: [txn.date, txn.payee, txn.note, JSON.stringify(txn.tags), ts, id],
+      },
+      { sql: 'DELETE FROM postings WHERE txn_id = $1', params: [id] },
+      ...this.postingStmts(id, txn.postings),
     ]);
-    await this.db.execute('DELETE FROM postings WHERE txn_id = $1', [id]);
-    await this.insertPostings(id, txn.postings);
     return (await this.getTransaction(id))!;
   }
 
@@ -508,13 +509,11 @@ export class TauriSqlRepository implements Repository {
     return rows[0].book_id;
   }
 
-  private async insertOrderLines(orderId: string, lines: Order['lines']): Promise<void> {
-    for (const l of lines) {
-      await this.db.execute(
-        'INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id, fee_ids) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [l.id, orderId, l.name, l.qty, l.unitPrice, l.productId, JSON.stringify(l.feeIds ?? [])],
-      );
-    }
+  private orderLineStmts(orderId: string, lines: Order['lines']): Stmt[] {
+    return lines.map((l) => ({
+      sql: 'INSERT INTO order_lines (id, order_id, name, qty, unit_price, product_id, fee_ids) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      params: [l.id, orderId, l.name, l.qty, l.unitPrice, l.productId, JSON.stringify(l.feeIds ?? [])],
+    }));
   }
 
   async addOrder(order: Order): Promise<StoredOrder> {
@@ -524,12 +523,14 @@ export class TauriSqlRepository implements Repository {
     await this.assertBook(order.bookId);
     if ((await this.customerBookId(order.customerId)) !== order.bookId) throw new Error('订单客户必须与订单同账本');
     const ts = this.now();
-    await this.db.execute(
-      `INSERT INTO orders (id, book_id, customer_id, date, currency, status, note, revenue_txn_id, created_at, updated_at, deleted)
+    await this.db.batch([
+      {
+        sql: `INSERT INTO orders (id, book_id, customer_id, date, currency, status, note, revenue_txn_id, created_at, updated_at, deleted)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)`,
-      [order.id, order.bookId, order.customerId, order.date, order.currency, order.status, order.note, order.revenueTxnId, ts, ts],
-    );
-    await this.insertOrderLines(order.id, order.lines);
+        params: [order.id, order.bookId, order.customerId, order.date, order.currency, order.status, order.note, order.revenueTxnId, ts, ts],
+      },
+      ...this.orderLineStmts(order.id, order.lines),
+    ]);
     return (await this.getOrder(order.id))!;
   }
 
@@ -796,13 +797,11 @@ export class TauriSqlRepository implements Repository {
   }
 
   // ---- 生意：代采采购单（C2d）----
-  private async insertPurchaseLines(purchaseId: string, lines: Purchase['lines']): Promise<void> {
-    for (const l of lines) {
-      await this.db.execute(
-        'INSERT INTO purchase_lines (id, purchase_id, name, qty, unit_cost, product_id) VALUES ($1, $2, $3, $4, $5, $6)',
-        [l.id, purchaseId, l.name, l.qty, l.unitCost, l.productId],
-      );
-    }
+  private purchaseLineStmts(purchaseId: string, lines: Purchase['lines']): Stmt[] {
+    return lines.map((l) => ({
+      sql: 'INSERT INTO purchase_lines (id, purchase_id, name, qty, unit_cost, product_id) VALUES ($1, $2, $3, $4, $5, $6)',
+      params: [l.id, purchaseId, l.name, l.qty, l.unitCost, l.productId],
+    }));
   }
 
   async addPurchase(purchase: Purchase): Promise<StoredPurchase> {
@@ -821,12 +820,14 @@ export class TauriSqlRepository implements Repository {
       if (orows[0].book_id !== purchase.bookId) throw new Error('关联订单必须与采购单同账本');
     }
     const ts = this.now();
-    await this.db.execute(
-      `INSERT INTO purchases (id, book_id, supplier_id, kind, order_id, dest_account_id, date, pay_mode, note, txn_id, created_at, updated_at, deleted)
+    await this.db.batch([
+      {
+        sql: `INSERT INTO purchases (id, book_id, supplier_id, kind, order_id, dest_account_id, date, pay_mode, note, txn_id, created_at, updated_at, deleted)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)`,
-      [purchase.id, purchase.bookId, purchase.supplierId, purchase.kind, purchase.orderId ?? '', purchase.destAccountId, purchase.date, purchase.payMode, purchase.note, purchase.txnId, ts, ts],
-    );
-    await this.insertPurchaseLines(purchase.id, purchase.lines);
+        params: [purchase.id, purchase.bookId, purchase.supplierId, purchase.kind, purchase.orderId ?? '', purchase.destAccountId, purchase.date, purchase.payMode, purchase.note, purchase.txnId, ts, ts],
+      },
+      ...this.purchaseLineStmts(purchase.id, purchase.lines),
+    ]);
     return (await this.getPurchase(purchase.id))!;
   }
 
@@ -883,14 +884,17 @@ export class TauriSqlRepository implements Repository {
       throw new Error('采购单供应商必须与采购单同账本');
     }
     const ts = this.now();
-    await this.db.execute(
-      'UPDATE purchases SET supplier_id=$1, date=$2, pay_mode=$3, note=$4, txn_id=$5, updated_at=$6 WHERE id=$7',
-      [next.supplierId, next.date, next.payMode, next.note, next.txnId, ts, id],
-    );
+    const stmts: Stmt[] = [
+      {
+        sql: 'UPDATE purchases SET supplier_id=$1, date=$2, pay_mode=$3, note=$4, txn_id=$5, updated_at=$6 WHERE id=$7',
+        params: [next.supplierId, next.date, next.payMode, next.note, next.txnId, ts, id],
+      },
+    ];
     if (patch.lines !== undefined) {
-      await this.db.execute('DELETE FROM purchase_lines WHERE purchase_id = $1', [id]);
-      await this.insertPurchaseLines(id, patch.lines);
+      stmts.push({ sql: 'DELETE FROM purchase_lines WHERE purchase_id = $1', params: [id] });
+      stmts.push(...this.purchaseLineStmts(id, patch.lines));
     }
+    await this.db.batch(stmts);
     return (await this.getPurchase(id))!;
   }
 
@@ -969,12 +973,12 @@ export class TauriSqlRepository implements Repository {
   }
 
   // ---- 月度对账 ----
-  // 顺序 autocommit（连接池下裸 BEGIN 会自锁，见上方说明）；批量置位非原子但单用户桌面可接受。
   async setPostingsCleared(postingIds: string[], cleared: boolean): Promise<void> {
+    if (postingIds.length === 0) return;
     const c = cleared ? 1 : 0;
-    for (const id of postingIds) {
-      await this.db.execute('UPDATE postings SET cleared = $1 WHERE id = $2', [c, id]);
-    }
+    await this.db.batch(
+      postingIds.map((id) => ({ sql: 'UPDATE postings SET cleared = $1 WHERE id = $2', params: [c, id] })),
+    );
   }
 
   async addReconciliation(rec: Reconciliation): Promise<StoredReconciliation> {

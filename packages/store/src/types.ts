@@ -116,7 +116,7 @@ export interface TxnQuery {
 }
 
 /**
- * 平台无关的持久层接口。InMemory / node:sqlite / tauri-plugin-sql 三个实现
+ * 平台无关的持久层接口。InMemory / node:sqlite / rusqlite+SQLCipher 桥（桌面）三个实现
  * 遵循同一契约；UI 只依赖此接口。
  *
  * 多账本约束（实现负责校验）：
