@@ -6,7 +6,7 @@ If you want to understand Hengji's code, run it locally, or fork it into your ow
 
 **Audience**: developers / anyone wanting to fork / contributors who want to open a PR.
 
-On the surface Hengji is just "log an entry," but underneath it's a rigorous double-entry accounting engine. It's an open-source, local-first desktop app — your data lives 100% in local SQLite, never goes online, never gets uploaded. The current version is v0.2.0 (Windows x64 only, unsigned). This page explains how it's put together.
+On the surface Hengji is just "log an entry," but underneath it's a rigorous double-entry accounting engine. It's an open-source, local-first desktop app — your data lives 100% in local SQLite, never goes online, never gets uploaded. The current version is v0.3.0 (Windows x64 only, unsigned). This page explains how it's put together.
 
 ---
 

@@ -95,7 +95,7 @@ This means commissions, shipping, and the like are seen by Hengji as part of the
 
 "Extra Fees" is the first primitive to land from Hengji's planned **formula engine / plugin foundation**: a name + a set of declarative tier brackets that deterministically compute an amount from order lines. It's pure, recomputable, and auditable — the same inputs always yield the same result.
 
-More complex fee rules down the road — even "describe a fee rule in plain language and have it auto-translated into brackets" — will all build on this primitive. What's already usable in the current version (v0.2.0) is exactly the set above: percentage / fixed / by-quantity × tier brackets.
+More complex fee rules down the road — even "describe a fee rule in plain language and have it auto-translated into brackets" — will all build on this primitive. What's already usable in the current version (v0.3.0) is exactly the set above: percentage / fixed / by-quantity × tier brackets.
 
 ---
 

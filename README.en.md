@@ -14,9 +14,9 @@ Open-source, local-first **double-entry accounting**. Rigorous double-entry unde
 
 ## ⬇️ Download
 
-**[Download the latest release (Windows)](https://github.com/sailorsinbad14/hengji/releases/latest)** — double-click `Hengji_0.2.0_x64-setup.exe`, install, and go. No dev environment required; **your data lives 100% on your machine, never uploaded**.
+**[Download the latest release (Windows)](https://github.com/sailorsinbad14/hengji/releases/latest)** — double-click `Hengji_0.3.0_x64-setup.exe`, install, and go. No dev environment required; **your data lives 100% on your machine, never uploaded**.
 
-> Current version v0.2.0, Windows x64 only, unsigned. On the SmartScreen "unknown publisher" prompt, choose **"More info → Run anyway"**. To build from source or contribute, see the [Developer guide](docs/en/development.md).
+> Current version v0.3.0, Windows x64 only, unsigned. On the SmartScreen "unknown publisher" prompt, choose **"More info → Run anyway"**. To build from source or contribute, see the [Developer guide](docs/en/development.md).
 
 ## 🚀 Get started in 3 minutes
 
