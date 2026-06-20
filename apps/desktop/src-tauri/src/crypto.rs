@@ -439,7 +439,11 @@ mod engine {
             let _ = std::fs::remove_file(dir.join(f));
         }
         let db = dir.join(DB_FILE);
-        let _ = std::fs::remove_file(&db);
+        // 删库带退避重试 + 校验真消失（同 rename_with_retry 的理由）：Windows 下刚 `*conn=None` 的库文件句柄
+        // 可能延迟释放，裸 remove_file 会静默失败（或返回 Ok 但「删除挂起」文件仍在）→ 明文「清空」假成功、
+        // 数据残留。删不掉则返回 Err，命令层据此上报「清空失败·请重试」而非误报成功。
+        // （信封/两 slot 已先删——加密库即便此处删库失败也已不可解；明文库才是数据泄漏面，故必须确认删除。）
+        let db_removed = remove_file_with_retry(&db);
         clean_sidecars(&db);
         // 清掉任何历史遗留的隔离墓碑目录/旧 sentinel（保险，正常没有）。
         if let Ok(rd) = std::fs::read_dir(dir) {
@@ -450,7 +454,7 @@ mod engine {
                 }
             }
         }
-        Ok(())
+        db_removed
     }
 
     /// 库文件头是否为明文 SQLite。文件缺失／太短 → 视为「非明文」（保守：不会把损坏库当明文去开）。
@@ -478,6 +482,20 @@ mod engine {
             }
         }
         Err(internal_io(last.expect("loop runs ≥1 time")))
+    }
+
+    /// 删文件并**校验确实消失**，带退避重试（同 rename_with_retry 的理由）。Windows 下刚关闭连接的库文件
+    /// 句柄可能延迟释放，裸 `remove_file` 会静默失败、或返回 Ok 但「删除挂起」文件仍在 → 故每轮删后校验
+    /// `!exists()`。本就不存在 / 删成功并消失 → Ok；退避重试 12 次后仍在 → Err（wipe 据此上报清空失败）。
+    fn remove_file_with_retry(p: &Path) -> Result<(), CryptoError> {
+        for i in 0..12u32 {
+            let _ = std::fs::remove_file(p);
+            if !p.exists() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40 * u64::from(i + 1)));
+        }
+        Err(internal(format!("清空失败：数据库文件仍被占用、无法删除: {}", p.display())))
     }
 
     /// 删库的 WAL/SHM 边车（迁移后残留旧边车会损坏新库，Spike #2 probe2）。
@@ -1184,6 +1202,21 @@ mod engine {
                 assert!(!dir.join(f).exists(), "{f} 应已删");
             }
             assert!(!dir.join("heng.destroyed-old").exists(), "历史隔离残留应清掉");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// remove_file_with_retry：不存在幂等 Ok；存在则删除并校验消失后 Ok。**0 DA、无 TPM**。
+        /// （Windows 句柄延迟释放导致重试耗尽的失败路径无法跨平台确定性单测，靠 wipe 实测 + 退避重试背书。）
+        #[test]
+        fn remove_file_with_retry_idempotent_and_verifies() {
+            let dir = std::env::temp_dir().join(format!("heng-rm-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            assert!(remove_file_with_retry(&dir.join("nope")).is_ok(), "不存在应幂等 Ok");
+            let f = dir.join("x");
+            std::fs::write(&f, b"data").unwrap();
+            assert!(remove_file_with_retry(&f).is_ok());
+            assert!(!f.exists(), "删后文件应消失");
             let _ = std::fs::remove_dir_all(&dir);
         }
 

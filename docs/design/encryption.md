@@ -106,6 +106,7 @@
   - **加密态**：必须**输对当前密码**（命令层先 `unlock` 验证密码，解封成功才算对；错则原样返回 `WrongPassword`/`Locked`/… **绝不删**）+ 二次确认。
   - **明文态**：无密码，仅二次确认。
 - **执行＝直接永久删**（无后悔药、无隔离区）：删 TPM 两个 slot 钥匙（加密库即刻不可解）→ 删信封 `heng.dek.tpm` / staging `.new` / 迁移标记 `heng.migrate` / 预解锁状态 `heng.security` → 删 `heng.db` 及 `-wal/-shm` 边车 → 清掉任何历史遗留的 `heng.destroyed*` 隔离残留（保险，正常没有）。
+  - **删库带退避重试 + 校验真消失**：Windows 下刚关库的文件句柄可能延迟释放、裸 `remove_file` 会静默失败（明文「清空」假成功、数据残留）→ 删不掉则上报「清空失败·请重试」，绝不在明文数据仍在时假报成功。
 - **删 slot 的容错**：TPM 偶发占用 → 小重试 3 次；仍删不掉就放过——剩下的是**良性孤儿钥匙**（它保护的库已删、解不开任何东西；下次设密码 `create_slot_key(OVERWRITE)` + reconcile 孤儿清理会收掉它）。
 - **之后**：JS 侧 `handleWiped` 清空内存 → `resetDesktopRepo` → 开一个**全新空明文库**（一个默认账本）→ 回总表。从干净的初始态重新开始。
 
@@ -201,7 +202,7 @@ SQLCipher 经 `rusqlite` 的 `bundled-sqlcipher-vendored-openssl` feature 编 C 
 
 ## 11. 测试
 
-`cargo test`（16 passed / 4 ignored；须 vcvars + Strawberry Perl 环境）：
+`cargo test`（17 passed / 4 ignored；须 vcvars + Strawberry Perl 环境）：
 
 - **纯逻辑 always-run（0 DA，无 TPM）**：UTF-16LE 摘要钉死（含空串/多码元/无尾 NUL）、hex roundtrip、信封 serde、`classify` 映射、slot 助手、迁移标记 serde、库头探测。
 - **SQLCipher / 迁移 / 备份 / 清空 自动跑（0 DA，纯 DEK 无 TPM）**：raw-key 真加密 roundtrip（头非明文 + 错 key fail-fast）、明→密→明迁移保数据 + user_version + 库头翻转、备份导出（明/密两路 + 路径防撞）、`wipe` 删全部本地数据。

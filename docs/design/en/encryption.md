@@ -106,6 +106,7 @@ Unlock / wrap failures are classified by `FailClass` (`crypto.rs`); the UI split
   - **Encrypted**: must **enter the correct current password** (the command layer first runs `unlock` to verify — only a successful unseal counts as correct; otherwise it returns `WrongPassword`/`Locked`/… unchanged and **does not delete**) + a second confirmation.
   - **Plaintext**: no password, just a second confirmation.
 - **Execution = permanent deletion right away** (no undo zone, no quarantine): delete both TPM slot keys (the encrypted DB is instantly unsealable) → delete the envelope `heng.dek.tpm` / staging `.new` / migration marker `heng.migrate` / pre-unlock state `heng.security` → delete `heng.db` and its `-wal/-shm` sidecars → clean up any historical `heng.destroyed*` quarantine residue (just in case; normally none).
+  - **The DB delete retries + verifies it's actually gone**: on Windows a just-closed file handle may be released late and a bare `remove_file` can silently fail (a plaintext "wipe" falsely succeeds, data survives) → if it can't be deleted, it reports "wipe failed · retry" rather than falsely claiming success while plaintext data still exists.
 - **Slot-delete tolerance**: the TPM is occasionally busy → small 3-try retry; if it still can't be deleted, let it go — what's left is a **benign orphan key** (the DB it protected is already deleted and it can't unseal anything; the next set-password's `create_slot_key(OVERWRITE)` + reconcile orphan cleanup will collect it).
 - **Afterward**: JS-side `handleWiped` clears memory → `resetDesktopRepo` → opens a **brand-new empty plaintext DB** (one default book) → returns to the overview. A fresh start from a clean initial state.
 
@@ -201,7 +202,7 @@ See [Developer manual · Prerequisites](../../en/development.md).
 
 ## 11. Testing
 
-`cargo test` (16 passed / 4 ignored; requires the vcvars + Strawberry Perl environment):
+`cargo test` (17 passed / 4 ignored; requires the vcvars + Strawberry Perl environment):
 
 - **Pure-logic, always-run (0 DA, no TPM)**: UTF-16LE digest pinned (incl. empty string / multi-code-unit / no trailing NUL), hex roundtrip, envelope serde, `classify` mapping, slot helpers, migration-marker serde, DB-header detection.
 - **SQLCipher / migration / backup / wipe, auto-run (0 DA, pure DEK no TPM)**: raw-key true-encryption roundtrip (header not plaintext + wrong-key fail-fast), plaintext→ciphertext→plaintext migration preserving data + user_version + header flip, backup export (plaintext/encrypted paths + path-collision guard), `wipe` removing all local data.
