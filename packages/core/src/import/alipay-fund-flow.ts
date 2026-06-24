@@ -8,7 +8,7 @@ import type { DraftSuggestion, Direction, ImportDraftRow, ImportMeta, ImportPars
  * 选型理由（见设计讨论）：资金流水一次导出即涵盖收/支/退款/内部划转，且有「对方名称」「账务类型」
  * 「ISO 日期」「交易号」——分账、去重、内部划转识别所需字段最全。
  *
- * 输入是**已解码的文本**（GB18030 解码由 I/O 边界负责：浏览器 `new TextDecoder('gbk')`、
+ * 输入是**已解码的文本**（GB18030 解码由 I/O 边界负责：浏览器 `new TextDecoder('gb18030')`、
  * 桌面 Rust 侧解码）。本函数纯逻辑、无 I/O，便于测试与复用。
  *
  * 关键认知：「账务类型」只决定「真实收支 vs 内部划转 vs 退款」；具体是收还是支由「收入/支出」两列定。
