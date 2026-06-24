@@ -11,6 +11,7 @@
  * 算账永远走确定性引擎、人工核对永远在（红线）。
  */
 
+import type { EntryInput } from './ledger';
 import type { Direction, DraftSuggestion } from './import/types';
 
 /** 批次状态：审中 → 已提交（全行落库/跳过）/ 已撤销（整批反向）。 */
@@ -58,4 +59,49 @@ export interface StagingRow {
   status: StagingRowStatus;
   /** 落库后回填的交易 id（pending/skipped 时为 null）。 */
   txnId: string | null;
+}
+
+/**
+ * 复核台对一行的落库决定。**红线**：解析器的 `unknown`/双关行必须由复核台先定夺成具体 `kind`，
+ * 本类型不含 unknown——`stagingRowToEntry` 不读 suggestion 兜底（绝不按 direction 静默记错）。
+ * `refund` 由复核台按冲账方向折成 income/expense（退款进账冲原支出＝把钱记回该支出科目）。
+ */
+export interface StagingPostDecision {
+  kind: 'income' | 'expense' | 'transfer-in' | 'transfer-out';
+  /** 落入的账本。 */
+  bookId: string;
+  /** 对手腿账户：income/expense=分类科目；transfer=对手资金账户。 */
+  accountId: string;
+}
+
+/**
+ * 把一条已复核的草稿行 + 落库决定 + 源账户（整批选定的全局账户），纯函数地映射成 `expandEntry` 输入。
+ * 金额/平衡校验交给 `expandEntry`；这里只定方向与两腿账户：
+ * - income：钱进源账户（借源账户 / 贷分类收入）；
+ * - expense：钱出源账户（借分类支出 / 贷源账户）；
+ * - transfer-out：源账户 → 对手账户；transfer-in：对手账户 → 源账户。
+ * 守卫：对手腿不得等于源账户（否则一腿自抵＝空交易）。导入恒单一币种 CNY（由 expandEntry 默认）。
+ */
+export function stagingRowToEntry(
+  row: Pick<StagingRow, 'amountMinor' | 'date' | 'payee' | 'note'>,
+  decision: StagingPostDecision,
+  sourceAccountId: string,
+): EntryInput {
+  if (!decision.bookId || !decision.accountId) {
+    throw new Error('落库决定缺账本或对手腿账户（草稿未复核指派，不得落库）');
+  }
+  if (decision.accountId === sourceAccountId) {
+    throw new Error('对手腿账户不能等于源账户');
+  }
+  const base = { bookId: decision.bookId, date: row.date, amount: row.amountMinor, payee: row.payee, note: row.note, tags: [] as string[] };
+  switch (decision.kind) {
+    case 'income':
+      return { ...base, kind: 'income', accountId: sourceAccountId, categoryId: decision.accountId };
+    case 'expense':
+      return { ...base, kind: 'expense', accountId: sourceAccountId, categoryId: decision.accountId };
+    case 'transfer-out':
+      return { ...base, kind: 'transfer', fromAccountId: sourceAccountId, toAccountId: decision.accountId };
+    case 'transfer-in':
+      return { ...base, kind: 'transfer', fromAccountId: decision.accountId, toAccountId: sourceAccountId };
+  }
 }
