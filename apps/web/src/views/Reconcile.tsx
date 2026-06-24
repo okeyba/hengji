@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { accountBalance, adjustBalanceEntry, expandEntry, toMinor, unclearedCount } from '@app/core';
+import { accountBalance, adjustBalanceEntry, expandEntry, matchStatement, toMinor, unclearedCount } from '@app/core';
+import type { StatementItem } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredReconciliation, StoredTransaction } from '@app/store';
 import { genId } from '../db';
 import { currencyDef, fmtMoney, todayISO } from '../format';
+import { parseImportFile, SOURCE_LABELS } from '../import-files';
+import type { ImportSource } from '../import-files';
 
 const GAIN_LOSS = '盘盈盘亏';
 type AddKind = 'income' | 'expense';
@@ -64,6 +67,11 @@ export default function Reconcile({
   const [aBook, setABook] = useState('');
   const [aDate, setADate] = useState(todayISO());
 
+  // 导入账单自动勾对（③ 对账 match）：解析账单 → 按金额同口径+日期窗口匹配本账户分录 → 自动勾选命中、列出漏记
+  const [matchSource, setMatchSource] = useState<ImportSource>('alipay-fund-flow');
+  const [matchBusy, setMatchBusy] = useState(false);
+  const [matchInfo, setMatchInfo] = useState<{ total: number; matched: number; unmatched: Array<{ date: string; payee: string; signedAmount: number; direction: 'in' | 'out' }> } | null>(null);
+
   const selAccount = recAccounts.find((a) => a.id === accountId);
   const homeBookId = selAccount?.bookId ?? '';
   const curCode = selAccount?.currency ?? 'CNY';
@@ -87,6 +95,7 @@ export default function Reconcile({
     setStmt('');
     setMsg(null);
     setErr(null);
+    setMatchInfo(null);
   }
 
   // 该账户的分录（含所在交易的账本），按日期升序——贴对账单阅读顺序
@@ -210,6 +219,7 @@ export default function Reconcile({
       setChecked((prev) => new Set(prev).add(newPosting.id));
       setAAmount('');
       setAddOpen(false);
+      setMatchInfo(null); // 补录后清掉自动勾对的漏记快照——否则同一漏记行可被重复点「补录这笔」记成多笔
       await reload();
       setMsg('已补录一笔并自动勾选。');
     } catch (e) {
@@ -217,6 +227,53 @@ export default function Reconcile({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** 导入账单自动勾对：解析账单 → 把行折成与本账户同口径的有符号金额 → matchStatement → 自动勾选命中、记漏记。 */
+  async function onMatchFile(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许重选同名文件
+    if (!file) return;
+    setMatchBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const parsed = await parseImportFile(matchSource, file);
+      // 进账+ / 出账−，与账户分录 amount 同口径。常见「出账=支出 / 进账=收入」路径成立；信用卡还款、
+      // 退款冲正等反向场景符号可能不符，请在下方流水里手动核对再完成对账（金额相等但方向相反会错配）。
+      const signed = (r: { direction: 'in' | 'out'; amountMinor: number }): number => (r.direction === 'in' ? r.amountMinor : -r.amountMinor);
+      const items: StatementItem[] = parsed.rows.map((r) => ({ signedAmount: signed(r), date: r.date }));
+      // 只配**未核销**分录：已 cleared 的是往期已对账分录，纳入会挤占本期账单行的坑位 → 假漏记 → 诱导重复补录
+      const ledger = allRows.filter((r) => !r.cleared).map((r) => ({ id: r.pid, amount: r.amount, date: r.date }));
+      const res = matchStatement(items, ledger, 3);
+      setChecked((prev) => {
+        const next = new Set(prev);
+        for (const id of res.matchedIds) next.add(id);
+        return next;
+      });
+      const unmatched = res.unmatchedIndexes.map((i) => {
+        const r = parsed.rows[i]!;
+        return { date: r.date, payee: r.payee, signedAmount: signed(r), direction: r.direction };
+      });
+      setMatchInfo({ total: parsed.rows.length, matched: res.matchedIds.length, unmatched });
+      setMsg(
+        `「${file.name}」共 ${parsed.rows.length} 笔：自动勾选 ${res.matchedIds.length} 笔已记账，${unmatched.length} 笔账里没有（漏记，下方可补录）。核对差额到 0 即可完成对账。`,
+      );
+    } catch (err) {
+      setErr(`对账单解析失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setMatchBusy(false);
+    }
+  }
+
+  /** 把一笔漏记的账单行预填进「补录」表单（类型/金额/日期），用户选账本+分类后补录并自动勾选。 */
+  function prefillAdd(u: { date: string; direction: 'in' | 'out'; signedAmount: number }): void {
+    setAddOpen(true);
+    setAKind(u.direction === 'in' ? 'income' : 'expense');
+    setAAmount(String(Math.abs(u.signedAmount) / 10 ** dec));
+    setADate(u.date);
+    setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
+    setErr(null);
   }
 
   /** 内联删除一笔（重复 / 错记）——整笔交易软删，保留其余勾选进度。 */
@@ -301,6 +358,51 @@ export default function Reconcile({
           {selAccount?.global && <> · 全局共享（流水来自各账本）</>}
           {lastRec && <> · 上次对账 {lastRec.statementDate}（{fmtMoney(lastRec.statementBalance, curCode)}）</>}
         </div>
+      </div>
+
+      <div className="card">
+        <h3>
+          导入账单自动勾对 <span className="mini">可选 · 账单流水 ↔ 已记账</span>
+        </h3>
+        <p className="muted small">
+          上传该账户的支付宝 / 微信账单，自动勾选金额、日期对得上的已记账流水；账单上有、账里没有的（漏记）列在下方可一键补录。算账与匹配在本地执行，文件不上传云端。
+        </p>
+        <div className="brow" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+          <select
+            value={matchSource}
+            onChange={(e) => {
+              setMatchSource(e.target.value as ImportSource);
+              setMatchInfo(null); // 换源清掉上一次的漏记快照，避免跨源残留
+            }}
+          >
+            {(Object.keys(SOURCE_LABELS) as ImportSource[]).map((s) => (
+              <option key={s} value={s}>
+                {SOURCE_LABELS[s]}
+              </option>
+            ))}
+          </select>
+          <input type="file" accept={matchSource === 'wechat-bill' ? '.xlsx' : '.csv,.txt'} disabled={matchBusy} onChange={(e) => void onMatchFile(e)} />
+        </div>
+        {matchInfo && matchInfo.unmatched.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <p className="small" style={{ margin: '0 0 6px' }}>
+              账单上有、账里没有（漏记 {matchInfo.unmatched.length} 笔）——<span className="muted">补录前请确认下方流水里确实没有同金额的这笔，避免重复记账。</span>
+            </p>
+            {matchInfo.unmatched.map((u, i) => (
+              <div className="brow" key={i} style={{ alignItems: 'center' }}>
+                <span className="muted small" style={{ width: 84 }}>{u.date}</span>
+                <span style={{ flex: 1 }}>{u.payee || <span className="muted">（无对方）</span>}</span>
+                <span className={`rec-amt ${u.signedAmount < 0 ? 'neg' : 'pos'}`}>{fmtMoney(u.signedAmount, curCode)}</span>
+                <button className="lnk" onClick={() => prefillAdd(u)} disabled={busy || matchBusy}>
+                  补录这笔
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {matchInfo && matchInfo.unmatched.length === 0 && matchInfo.total > 0 && (
+          <p className="small" style={{ marginTop: 8 }}>账单 {matchInfo.total} 笔全部对上已记账 ✓</p>
+        )}
       </div>
 
       <div className="card">
