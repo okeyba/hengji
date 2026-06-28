@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { accountBalance, adjustBalanceEntry, expandEntry, matchStatement, toMinor, unclearedCount } from '@app/core';
-import type { StatementItem } from '@app/core';
+import type { EntryInput, StatementItem } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredReconciliation, StoredTransaction } from '@app/store';
 import { genId } from '../db';
 import { currencyDef, fmtMoney, todayISO } from '../format';
@@ -8,7 +8,7 @@ import { parseImportFile, SOURCE_LABELS } from '../import-files';
 import type { ImportSource } from '../import-files';
 
 const GAIN_LOSS = '盘盈盘亏';
-type AddKind = 'income' | 'expense';
+type AddKind = 'income' | 'expense' | 'transfer';
 
 /**
  * 勾对式对账（账户全局化 Phase 4：全局入口、按账户跨账本）：
@@ -66,11 +66,14 @@ export default function Reconcile({
   const [aCatId, setACatId] = useState('');
   const [aBook, setABook] = useState('');
   const [aDate, setADate] = useState(todayISO());
+  const [aCounterId, setACounterId] = useState(''); // 转账补录的对手资金账户
+  const [aTransferOut, setATransferOut] = useState(true); // 转账方向：true=本对账账户转出
+  const [prefillFromIdx, setPrefillFromIdx] = useState<number | null>(null); // 从哪条漏记预填的（补录后精确移除该行，而非清空整列）
 
   // 导入账单自动勾对（③ 对账 match）：解析账单 → 按金额同口径+日期窗口匹配本账户分录 → 自动勾选命中、列出漏记
   const [matchSource, setMatchSource] = useState<ImportSource>('alipay-fund-flow');
   const [matchBusy, setMatchBusy] = useState(false);
-  const [matchInfo, setMatchInfo] = useState<{ total: number; matched: number; unmatched: Array<{ date: string; payee: string; signedAmount: number; direction: 'in' | 'out' }> } | null>(null);
+  const [matchInfo, setMatchInfo] = useState<{ total: number; matched: number; unmatched: Array<{ date: string; payee: string; signedAmount: number; direction: 'in' | 'out'; suggestion: string }> } | null>(null);
 
   const selAccount = recAccounts.find((a) => a.id === accountId);
   const homeBookId = selAccount?.bookId ?? '';
@@ -116,6 +119,9 @@ export default function Reconcile({
 
   const addCats = accounts.filter((a) => a.type === aKind && a.bookId === aBook && !a.global && !a.archived);
   const effACat = addCats.some((c) => c.id === aCatId) ? aCatId : (addCats[0]?.id ?? '');
+  // 转账补录的对手资金账户：全部资产/负债账户（含全局），排除当前对账账户（对手腿不能等于源）
+  const counterAccounts = accounts.filter((a) => (a.type === 'asset' || a.type === 'liability') && !a.archived && a.id !== accountId);
+  const effCounter = counterAccounts.some((c) => c.id === aCounterId) ? aCounterId : (counterAccounts[0]?.id ?? '');
   // 补录归属账本：全局账户可选任意账本；账本专属账户只能落其所属账本（铁律）
   const addBookOptions = selAccount?.global ? liveBooks : liveBooks.filter((b) => b.id === homeBookId);
 
@@ -142,7 +148,16 @@ export default function Reconcile({
   }
 
   async function complete(): Promise<void> {
-    if (diff !== 0 || busy) return;
+    if (busy) return;
+    // 反馈而非静默禁用：差额缺/不为 0 时点「完成对账」，明确告诉用户卡在哪、怎么解（而非按钮灰着没反应）。
+    if (diff === null) {
+      setErr('请先填写对账单余额，再完成对账。');
+      return;
+    }
+    if (diff !== 0) {
+      setErr(`差额 ${fmtMoney(diff, curCode)} 未对平：请补录漏记 / 修正金额 / 或记一笔盘盈盘亏调整后再完成。`);
+      return;
+    }
     setBusy(true);
     setErr(null);
     try {
@@ -204,22 +219,43 @@ export default function Reconcile({
       setErr('请选择补录归属账本');
       return;
     }
-    if (!effACat) {
+    if (aKind === 'transfer') {
+      if (!effCounter) {
+        setErr('请选择转账的对手账户');
+        return;
+      }
+    } else if (!effACat) {
       setErr(`「${bookName(aBook)}」没有${aKind === 'income' ? '收入' : '支出'}分类，先去该账本「账户」页加一个`);
       return;
     }
     setBusy(true);
     try {
-      const entry = expandEntry(
-        { kind: aKind, bookId: aBook, date: aDate, amount: toMinor(major, dec), currency: curCode, payee: '对账补录', accountId, categoryId: effACat },
-        genId,
-      );
+      const amountMinor = toMinor(major, dec);
+      // 转账（内部划转，如理财申购）：本对账账户与对手资金账户互转，按方向定 from/to——不再被迫记成收/支（错口径）。
+      const input: EntryInput =
+        aKind === 'transfer'
+          ? {
+              kind: 'transfer',
+              bookId: aBook,
+              date: aDate,
+              amount: amountMinor,
+              currency: curCode,
+              ...(aTransferOut ? { fromAccountId: accountId, toAccountId: effCounter } : { fromAccountId: effCounter, toAccountId: accountId }),
+              payee: '对账补录',
+              note: '',
+            }
+          : { kind: aKind, bookId: aBook, date: aDate, amount: amountMinor, currency: curCode, payee: '对账补录', accountId, categoryId: effACat };
+      const entry = expandEntry(input, genId);
       await repo.addTransaction(entry);
       const newPosting = entry.postings.find((p) => p.accountId === accountId)!;
       setChecked((prev) => new Set(prev).add(newPosting.id));
       setAAmount('');
       setAddOpen(false);
-      setMatchInfo(null); // 补录后清掉自动勾对的漏记快照——否则同一漏记行可被重复点「补录这笔」记成多笔
+      // 从漏记列表「精确移除」已补的那一行（而非清空整列）——可连续补下一条；防同一行重复补录靠"它已不在列表里"。
+      if (prefillFromIdx !== null) {
+        setMatchInfo((prev) => (prev ? { ...prev, matched: prev.matched + 1, unmatched: prev.unmatched.filter((_, i) => i !== prefillFromIdx) } : prev));
+      }
+      setPrefillFromIdx(null);
       await reload();
       setMsg('已补录一笔并自动勾选。');
     } catch (e) {
@@ -253,7 +289,7 @@ export default function Reconcile({
       });
       const unmatched = res.unmatchedIndexes.map((i) => {
         const r = parsed.rows[i]!;
-        return { date: r.date, payee: r.payee, signedAmount: signed(r), direction: r.direction };
+        return { date: r.date, payee: r.payee, signedAmount: signed(r), direction: r.direction, suggestion: r.suggestion };
       });
       setMatchInfo({ total: parsed.rows.length, matched: res.matchedIds.length, unmatched });
       setMsg(
@@ -266,13 +302,17 @@ export default function Reconcile({
     }
   }
 
-  /** 把一笔漏记的账单行预填进「补录」表单（类型/金额/日期），用户选账本+分类后补录并自动勾选。 */
-  function prefillAdd(u: { date: string; direction: 'in' | 'out'; signedAmount: number }): void {
+  /** 把一笔漏记的账单行预填进「补录」表单（类型/金额/日期/对手），用户确认后补录并自动勾选、从漏记列表消解。 */
+  function prefillAdd(u: { date: string; direction: 'in' | 'out'; signedAmount: number; suggestion: string }, idx: number): void {
     setAddOpen(true);
-    setAKind(u.direction === 'in' ? 'income' : 'expense');
+    // 智能默认类型：内部划转（理财申购等）→ 转账（按方向定转出/转入）；否则按方向收/支。用户仍可改。
+    const isTransfer = u.suggestion === 'transfer-in' || u.suggestion === 'transfer-out';
+    setAKind(isTransfer ? 'transfer' : u.direction === 'in' ? 'income' : 'expense');
+    setATransferOut(u.direction === 'out');
     setAAmount(String(Math.abs(u.signedAmount) / 10 ** dec));
     setADate(u.date);
     setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
+    setPrefillFromIdx(idx);
     setErr(null);
   }
 
@@ -393,7 +433,7 @@ export default function Reconcile({
                 <span className="muted small" style={{ width: 84 }}>{u.date}</span>
                 <span style={{ flex: 1 }}>{u.payee || <span className="muted">（无对方）</span>}</span>
                 <span className={`rec-amt ${u.signedAmount < 0 ? 'neg' : 'pos'}`}>{fmtMoney(u.signedAmount, curCode)}</span>
-                <button className="lnk" onClick={() => prefillAdd(u)} disabled={busy || matchBusy}>
+                <button className="lnk" onClick={() => prefillAdd(u, i)} disabled={busy || matchBusy}>
                   补录这笔
                 </button>
               </div>
@@ -458,6 +498,7 @@ export default function Reconcile({
                 setAddOpen(true);
                 setADate(stmtDate);
                 setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
+                setPrefillFromIdx(null); // 通用补录入口（非从某条漏记预填）→ 不动漏记列表
                 setErr(null);
               }}
             >
@@ -481,22 +522,45 @@ export default function Reconcile({
                   <select value={aKind} onChange={(e) => setAKind(e.target.value as AddKind)}>
                     <option value="expense">支出</option>
                     <option value="income">收入</option>
+                    <option value="transfer">转账（内部划转）</option>
                   </select>
                 </label>
                 <label>
                   金额（{currencyDef(curCode).symbol}）
                   <input inputMode="decimal" value={aAmount} onChange={(e) => setAAmount(e.target.value)} placeholder="0.00" />
                 </label>
-                <label>
-                  分类
-                  <select value={effACat} onChange={(e) => setACatId(e.target.value)}>
-                    {addCats.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {aKind === 'transfer' ? (
+                  <>
+                    <label>
+                      方向
+                      <select value={aTransferOut ? 'out' : 'in'} onChange={(e) => setATransferOut(e.target.value === 'out')}>
+                        <option value="out">转出（本账户 → 对手）</option>
+                        <option value="in">转入（对手 → 本账户）</option>
+                      </select>
+                    </label>
+                    <label>
+                      对手账户
+                      <select value={effCounter} onChange={(e) => setACounterId(e.target.value)}>
+                        {counterAccounts.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                ) : (
+                  <label>
+                    分类
+                    <select value={effACat} onChange={(e) => setACatId(e.target.value)}>
+                      {addCats.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label>
                   日期
                   <input type="date" value={aDate} onChange={(e) => setADate(e.target.value)} />
@@ -528,7 +592,7 @@ export default function Reconcile({
               记盘盈盘亏调整 {fmtMoney(diff, curCode)}
             </button>
           )}
-          <button className="btn btn-primary" onClick={() => void complete()} disabled={busy || diff !== 0}>
+          <button className="btn btn-primary" onClick={() => void complete()} disabled={busy}>
             完成对账
           </button>
         </div>
