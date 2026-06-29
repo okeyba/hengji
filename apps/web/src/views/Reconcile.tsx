@@ -500,20 +500,6 @@ export default function Reconcile({
             ))}
           </div>
         )}
-        <div className="rec-add">
-          <button
-            className="lnk"
-            onClick={() => {
-              setAddOpen(true);
-              setADate(stmtDate);
-              setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
-              setPrefillFromIdx(null); // 通用补录入口（非从某条漏记预填）→ 不动漏记列表
-              setErr(null);
-            }}
-          >
-            ＋ 补录一笔（对账单上有、账里漏记的款项）
-          </button>
-        </div>
       </div>
 
       <div className="card rec-foot">
@@ -524,6 +510,19 @@ export default function Reconcile({
           </span>
         </div>
         <div className="rec-actions">
+          <button
+            className="btn"
+            title="对账单上有、账里漏记的款项"
+            onClick={() => {
+              setAddOpen(true);
+              setADate(stmtDate);
+              setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
+              setPrefillFromIdx(null); // 通用补录入口（非从某条漏记预填）→ 不动漏记列表
+              setErr(null);
+            }}
+          >
+            ＋ 补录一笔
+          </button>
           {diff !== null && diff !== 0 && (
             <button className="btn" onClick={() => void adjust()} disabled={busy}>
               记盘盈盘亏调整 {fmtMoney(diff, curCode)}

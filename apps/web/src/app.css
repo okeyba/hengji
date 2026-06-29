@@ -261,7 +261,6 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 }
 .rec-del { padding: 2px 6px; opacity: 0.35; }
 .rec-row:hover .rec-del { opacity: 1; }
-.rec-add { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .rec-row:last-child { border-bottom: none; }
 .rec-row.on { background: var(--brand-50); border-radius: 8px; }
 .rec-row input { width: auto; }
