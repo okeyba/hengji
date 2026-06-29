@@ -88,6 +88,7 @@ export default function ImportReview({
   const [rows, setRows] = useState<StoredStagingRow[]>([]);
   const [decisions, setDecisions] = useState<Record<string, RowDecision>>({});
   const [mem, setMem] = useState<CounterpartyMemory>({});
+  const [payeeFilter, setPayeeFilter] = useState<string | null>(null); // 「筛选同名」：只看某对方的待复核行
 
   useEffect(() => {
     if (!srcAccount && globalAccounts[0]) setSrcAccount(globalAccounts[0].id);
@@ -205,6 +206,7 @@ export default function ImportReview({
       init[row.id] = { kind, bookId, accountId, date: row.date };
     }
     setMem(m); // 与「套用同类全填」共用同一记忆快照（本批开台即载入）
+    setPayeeFilter(null);
     setActive(b);
     setRows(r);
     setDecisions(init);
@@ -215,15 +217,32 @@ export default function ImportReview({
   }
   const assignedCount = rows.filter((r) => complete(decisions[r.id])).length;
 
+  // 同名笔数（≥2 才给「筛选同名」入口；单笔无须筛）
+  const payeeCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      const p = r.payee.trim();
+      if (p) m.set(p, (m.get(p) ?? 0) + 1);
+    }
+    return m;
+  }, [rows]);
+
+  // 展示用行集：先按「筛选同名」过滤，再「未复核在上、已复核沉底」稳定排序（只动展示、不改 rows 源序与落库范围）
+  const viewRows = useMemo(() => {
+    const base = payeeFilter ? rows.filter((r) => r.payee.trim() === payeeFilter) : rows;
+    return [...base].sort((a, b) => Number(complete(decisions[a.id])) - Number(complete(decisions[b.id])));
+  }, [rows, payeeFilter, decisions]);
+
   /**
    * 顶部「套用同类全填」：把本批每条**未完成**待复核行的 账本 + 对手腿账户，用「同一对方」的模板填上。
    * 模板优先取**本批已填好的同名行**（用户刚教的一行 → 首批也能铺），其次取**持久对方记忆**（重复导入自动套）。
    * 红线：类型恒按账单解析器（不读记忆）→ 划转方向永不被翻转；账户须在该类型+账本下合法才填；
    * 绝不覆盖用户已填的字段或已完整的行。空对方名跳过。
    */
-  function fillSameCounterparty(): void {
+  function fillSameCounterparty(scope: StoredStagingRow[] = rows): void {
     if (!active) return;
-    // 本批同名模板：对方(trim) → 某条「完整」决定的 {bookId, accountId}（取首条命中）
+    // 本批同名模板：对方(trim) → 某条「完整」决定的 {bookId, accountId}（取首条命中）。模板取自全批，
+    // 故即便筛选只填某组，其它组已填好的同名行也能当模板（scope 只限定「填哪些」、不限定「拿谁当样板」）。
     const tpl = new Map<string, { bookId: string; accountId: string }>();
     for (const row of rows) {
       const d = decisions[row.id];
@@ -233,7 +252,7 @@ export default function ImportReview({
     const next: Record<string, RowDecision> = { ...decisions };
     let filled = 0;
     let hadIncomplete = false;
-    for (const row of rows) {
+    for (const row of scope) {
       const cur: RowDecision = next[row.id] ?? { bookId: '', kind: '', accountId: '', date: row.date };
       if (complete(cur)) continue; // 不动已填好的行
       hadIncomplete = true;
@@ -259,7 +278,7 @@ export default function ImportReview({
       }
     }
     setDecisions(next);
-    const remaining = rows.filter((r) => !complete(next[r.id])).length;
+    const remaining = scope.filter((r) => !complete(next[r.id])).length;
     if (filled > 0) {
       setMsg(`已按同名 / 历史记忆套用 ${filled} 行（类型仍按账单，账户已校验）${remaining ? `，仍有 ${remaining} 行待指派` : ''}。`);
     } else if (!hadIncomplete) {
@@ -295,6 +314,7 @@ export default function ImportReview({
     const left = await repo.listStagingRows({ batchId: active.id, status: 'pending' });
     if (left.length === 0) await repo.updateStagingBatch(active.id, { status: 'committed' });
     setRows(left);
+    setPayeeFilter(null); // 入账后行集变了，清掉筛选回到全部
     setMsg(`已入账 ${posted} 笔${failed ? `，${failed} 笔失败` : ''}。${left.length ? ` 还有 ${left.length} 笔待指派。` : ' 本批已全部处理。'}`);
     if (left.length === 0) setActive(null);
     setBusy(false);
@@ -390,24 +410,37 @@ export default function ImportReview({
       {active && (
         <div className="card">
           <h3>
-            复核：{active.label} <span className="muted small">（{rows.length} 笔待指派）</span>
+            复核：{active.label} <span className="muted small">（{rows.length} 笔 · 已指派 {assignedCount}）</span>
           </h3>
-          {rows.length > 0 && (
-            <div className="brow" style={{ alignItems: 'center', gap: 8, marginBottom: 4 }}>
-              <button className="lnk" disabled={busy} onClick={() => fillSameCounterparty()}>套用同类全填</button>
-              <span className="muted small">按本批同名对方 / 历史记忆，补上未指派行的账本与对手账户（类型仍按账单）。</span>
-            </div>
-          )}
+          {rows.length > 0 &&
+            (payeeFilter ? (
+              <div className="imp-filterbar">
+                <span>筛选同名：<b>{payeeFilter}</b> · {viewRows.length} 笔</span>
+                <button className="lnk" disabled={busy} onClick={() => fillSameCounterparty(viewRows)}>全填本组</button>
+                <button className="lnk" onClick={() => setPayeeFilter(null)}>清除筛选</button>
+              </div>
+            ) : (
+              <div className="brow" style={{ alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <button className="lnk" disabled={busy} onClick={() => fillSameCounterparty()}>套用同类全填</button>
+                <span className="muted small">按本批同名对方 / 历史记忆补上未指派行的账本与对手账户（类型仍按账单）；点某行「筛选同名」可只看该对方、分组填。</span>
+              </div>
+            ))}
           {rows.length === 0 ? (
             <p className="muted small">本批没有待复核的草稿行。</p>
           ) : (
             <>
-              {rows.map((row) => {
+              {payeeFilter && viewRows.length === 0 && (
+                <p className="muted small">该对方已无待复核行。<button className="lnk" onClick={() => setPayeeFilter(null)}>清除筛选</button></p>
+              )}
+              {viewRows.map((row) => {
                 const d = decisions[row.id] ?? { bookId: '', kind: '', accountId: '', date: row.date };
                 const acctOpts = accountsFor(d.kind, d.bookId, active.accountId);
                 const amt = row.direction === 'out' ? -row.amountMinor : row.amountMinor;
+                const done = complete(d);
+                const p = row.payee.trim();
                 return (
-                  <div key={row.id} className="brow" style={{ flexWrap: 'wrap', gap: 6, alignItems: 'center', borderTop: '1px solid var(--line, #eee)', paddingTop: 8 }}>
+                  <div key={row.id} className={`brow imp-row${done ? ' done' : ''}`} style={{ flexWrap: 'wrap', gap: 6, alignItems: 'center', borderTop: '1px solid var(--line, #eee)', paddingTop: 8 }}>
+                    {done && <span className="imp-tick" title="已复核">✓</span>}
                     <input type="date" value={d.date} onChange={(e) => setDec(row.id, { date: e.target.value })} style={{ width: 132 }} title="记账日期（可改）" />
                     <span style={{ flex: 1, minWidth: 120 }}>
                       {row.payee || <span className="muted">（无对方）</span>}
@@ -433,14 +466,18 @@ export default function ImportReview({
                         <option key={a.id} value={a.id}>{a.name}</option>
                       ))}
                     </select>
+                    {!payeeFilter && p !== '' && (payeeCounts.get(p) ?? 0) >= 2 && (
+                      <button className="lnk" title="只看该对方的同名流水、分组填" onClick={() => setPayeeFilter(p)}>筛选同名</button>
+                    )}
                     <button className="lnk" onClick={() => void onSkip(row.id)}>跳过</button>
                   </div>
                 );
               })}
-              <div style={{ marginTop: 12 }}>
+              <div className="imp-foot">
                 <button className="btn btn-primary" disabled={busy || assignedCount === 0} onClick={() => void postAll()}>
-                  确认入账（{assignedCount} 笔已指派）
+                  确认入账（{payeeFilter ? '全批 ' : ''}{assignedCount} 笔已指派）
                 </button>
+                {assignedCount < rows.length && <span className="muted small">未复核 {rows.length - assignedCount} 笔{payeeFilter ? '（含其它对方）' : ''}</span>}
               </div>
             </>
           )}

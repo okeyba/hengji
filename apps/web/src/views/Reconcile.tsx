@@ -91,6 +91,16 @@ export default function Reconcile({
     };
   }, [accountId, allTxns, repo]);
 
+  // 悬浮补录框：Esc 关闭
+  useEffect(() => {
+    if (!addOpen) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setAddOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [addOpen]);
+
   function selectAccount(id: string): void {
     setAccountId(id);
     setChecked(clearedIdsOf(id));
@@ -491,91 +501,18 @@ export default function Reconcile({
           </div>
         )}
         <div className="rec-add">
-          {!addOpen ? (
-            <button
-              className="lnk"
-              onClick={() => {
-                setAddOpen(true);
-                setADate(stmtDate);
-                setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
-                setPrefillFromIdx(null); // 通用补录入口（非从某条漏记预填）→ 不动漏记列表
-                setErr(null);
-              }}
-            >
-              ＋ 补录一笔（对账单上有、账里漏记的款项）
-            </button>
-          ) : (
-            <div className="rec-add-form">
-              <div className="qgrid">
-                <label>
-                  归属账本
-                  <select value={aBook} onChange={(e) => setABook(e.target.value)} disabled={addBookOptions.length <= 1}>
-                    {addBookOptions.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  类型
-                  <select value={aKind} onChange={(e) => setAKind(e.target.value as AddKind)}>
-                    <option value="expense">支出</option>
-                    <option value="income">收入</option>
-                    <option value="transfer">转账（内部划转）</option>
-                  </select>
-                </label>
-                <label>
-                  金额（{currencyDef(curCode).symbol}）
-                  <input inputMode="decimal" value={aAmount} onChange={(e) => setAAmount(e.target.value)} placeholder="0.00" />
-                </label>
-                {aKind === 'transfer' ? (
-                  <>
-                    <label>
-                      方向
-                      <select value={aTransferOut ? 'out' : 'in'} onChange={(e) => setATransferOut(e.target.value === 'out')}>
-                        <option value="out">转出（本账户 → 对手）</option>
-                        <option value="in">转入（对手 → 本账户）</option>
-                      </select>
-                    </label>
-                    <label>
-                      对手账户
-                      <select value={effCounter} onChange={(e) => setACounterId(e.target.value)}>
-                        {counterAccounts.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </>
-                ) : (
-                  <label>
-                    分类
-                    <select value={effACat} onChange={(e) => setACatId(e.target.value)}>
-                      {addCats.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                <label>
-                  日期
-                  <input type="date" value={aDate} onChange={(e) => setADate(e.target.value)} />
-                </label>
-              </div>
-              <div className="arow-btns" style={{ marginTop: 8 }}>
-                <button className="btn btn-primary" onClick={() => void addMissing()} disabled={busy}>
-                  补录并勾选
-                </button>
-                <button className="lnk" onClick={() => setAddOpen(false)}>
-                  取消
-                </button>
-              </div>
-            </div>
-          )}
+          <button
+            className="lnk"
+            onClick={() => {
+              setAddOpen(true);
+              setADate(stmtDate);
+              setABook(selAccount?.global ? (liveBooks[0]?.id ?? '') : homeBookId);
+              setPrefillFromIdx(null); // 通用补录入口（非从某条漏记预填）→ 不动漏记列表
+              setErr(null);
+            }}
+          >
+            ＋ 补录一笔（对账单上有、账里漏记的款项）
+          </button>
         </div>
       </div>
 
@@ -597,9 +534,85 @@ export default function Reconcile({
           </button>
         </div>
         {!stmtValid && stmtTrim !== '' && <p className="form-err">对账单余额需为数字</p>}
-        {err && <p className="form-err">{err}</p>}
+        {!addOpen && err && <p className="form-err">{err}</p>}
         {msg && <p className="rec-ok">{msg}</p>}
       </div>
+
+      {addOpen && (
+        <div className="rec-float" role="dialog" aria-label="补录一笔">
+          <div className="rec-float-head">
+            <h4>补录一笔{prefillFromIdx !== null ? '（漏记预填）' : ''}</h4>
+            <button className="rec-float-x" title="关闭" onClick={() => setAddOpen(false)}>×</button>
+          </div>
+          <div className="qgrid">
+            <label>
+              归属账本
+              <select value={aBook} onChange={(e) => setABook(e.target.value)} disabled={addBookOptions.length <= 1}>
+                {addBookOptions.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              类型
+              <select value={aKind} onChange={(e) => setAKind(e.target.value as AddKind)}>
+                <option value="expense">支出</option>
+                <option value="income">收入</option>
+                <option value="transfer">转账（内部划转）</option>
+              </select>
+            </label>
+            <label>
+              金额（{currencyDef(curCode).symbol}）
+              <input inputMode="decimal" value={aAmount} onChange={(e) => setAAmount(e.target.value)} placeholder="0.00" />
+            </label>
+            {aKind === 'transfer' ? (
+              <>
+                <label>
+                  方向
+                  <select value={aTransferOut ? 'out' : 'in'} onChange={(e) => setATransferOut(e.target.value === 'out')}>
+                    <option value="out">转出（本账户 → 对手）</option>
+                    <option value="in">转入（对手 → 本账户）</option>
+                  </select>
+                </label>
+                <label>
+                  对手账户
+                  <select value={effCounter} onChange={(e) => setACounterId(e.target.value)}>
+                    {counterAccounts.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : (
+              <label>
+                分类
+                <select value={effACat} onChange={(e) => setACatId(e.target.value)}>
+                  {addCats.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label>
+              日期
+              <input type="date" value={aDate} onChange={(e) => setADate(e.target.value)} />
+            </label>
+          </div>
+          <div className="arow-btns" style={{ marginTop: 10 }}>
+            <button className="btn btn-primary" onClick={() => void addMissing()} disabled={busy}>
+              补录并勾选
+            </button>
+            <button className="lnk" onClick={() => setAddOpen(false)}>取消</button>
+          </div>
+          {err && <p className="form-err" style={{ marginTop: 8 }}>{err}</p>}
+        </div>
+      )}
     </>
   );
 }
