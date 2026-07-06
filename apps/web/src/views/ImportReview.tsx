@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { StagingPostDecision } from '@app/core';
+import { MAPPED_SOURCE } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredStagingBatch, StoredStagingRow } from '@app/store';
 import { fmtMoney, todayISO } from '../format';
 import {
@@ -18,10 +19,16 @@ import type { SettleSuggestion } from '../biz';
 import { parseImportFile, SOURCE_LABELS } from '../import-files';
 import type { ImportSource } from '../import-files';
 import { parseOcrImageFile } from '../import-ocr';
+import { loadAiConfig, loadLlmSpecs, readBillInput, recognizeWithCloud, rememberLlmSpec, tryRememberedSpecs } from '../import-llm';
+import { llmKeyStatus, isLlmError } from '@app/store/llm';
 import { isDesktop } from '../db';
 
-/** 批次来源标签：账单文件源走 SOURCE_LABELS；OCR 图片识别另立。 */
-const srcLabel = (s: string): string => (s === 'ocr' ? '图片识别（OCR）' : (SOURCE_LABELS[s as ImportSource] ?? s));
+/** 批次来源标签：账单文件源走 SOURCE_LABELS；OCR 图片识别 / AI 认列另立（不进 SOURCE_LABELS，避免混入对账的进料下拉）。 */
+const srcLabel = (s: string): string =>
+  s === 'ocr' ? '图片识别（OCR）' : s === MAPPED_SOURCE ? 'AI 认列' : (SOURCE_LABELS[s as ImportSource] ?? s);
+
+/** 导入来源下拉的取值：确定性解析器源 + AI 认列（桌面 only）。 */
+type UiSource = ImportSource | typeof MAPPED_SOURCE;
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -85,10 +92,12 @@ export default function ImportReview({
     [accounts],
   );
 
-  const [source, setSource] = useState<ImportSource>('alipay-fund-flow');
+  const [source, setSource] = useState<UiSource>('alipay-fund-flow');
   const [srcAccount, setSrcAccount] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  /** 确定性解析失败/0 行时留住文件，供「用 AI 认列试试」一键重试（桌面 only）。 */
+  const [aiCandidate, setAiCandidate] = useState<File | null>(null);
 
   const [batches, setBatches] = useState<StoredStagingBatch[]>([]);
   const [active, setActive] = useState<StoredStagingBatch | null>(null);
@@ -131,6 +140,72 @@ export default function ImportReview({
     });
   }
 
+  /**
+   * AI 认列（增量4·4c，桌面 only）：先重放本地记忆 spec（零上云）；没命中才走
+   * 开关检查 → Key 检查 → **逐次弹窗确认** → 云认列。产出行进同一复核台（红线三道闸不变）。
+   */
+  async function aiRecognize(file: File): Promise<void> {
+    const input = await readBillInput(file);
+    let outcome = tryRememberedSpecs(await loadLlmSpecs(repo), input);
+    if (!outcome) {
+      const cfg = await loadAiConfig(repo);
+      if (!cfg.enabled) {
+        setMsg('AI 智能认列未开启：请到「设置 → AI 智能认列」开启并配置服务商。');
+        return;
+      }
+      const hasKey = await llmKeyStatus().catch(() => false);
+      if (!hasKey) {
+        setMsg('尚未配置 API Key：请到「设置 → AI 智能认列」保存你的 Key。');
+        return;
+      }
+      const ok = window.confirm(
+        `将把「${file.name}」的表头与前 25 行样本发送给你配置的 AI 服务商（${cfg.baseUrl}）用于识别列结构。\n金额解析、去重与记账仍全部在本地完成。是否继续？`,
+      );
+      if (!ok) {
+        setMsg('已取消，未发送任何数据。');
+        return;
+      }
+      setMsg('AI 认列中…');
+      outcome = await recognizeWithCloud(cfg, file.name, input);
+    }
+    const { result, spec, fromMemory } = outcome;
+    const warn = result.warnings.length
+      ? `提示：${result.warnings.slice(0, 3).join('；')}${result.warnings.length > 3 ? `（共 ${result.warnings.length} 条）` : ''}`
+      : '';
+    if (result.rows.length === 0) {
+      setMsg(`AI 映射没能解析出数据行。${warn || '请确认文件是含表头的账单明细。'}`);
+      return;
+    }
+    const res = await createImportBatch(
+      repo,
+      { source: MAPPED_SOURCE, accountId: srcAccount, label: `AI认列·${spec.bankName ? `${spec.bankName}·` : ''}${file.name}` },
+      result.rows,
+    );
+    if (!res.batch) {
+      setMsg(`「${file.name}」共 ${result.rows.length} 笔，全部已导入过、无新增。${warn}`);
+    } else {
+      if (!fromMemory) await rememberLlmSpec(repo, spec); // 云认列且真有产出才记忆（下次同银行零上云）
+      // 报出所用记忆的来源名：万一记忆 spec 误配了另一家银行的文件，用户在此可察觉
+      const memNote = fromMemory ? `（用本地记忆${spec.bankName ? `「${spec.bankName}」` : ''}识别，未上云）` : '';
+      setMsg(`${memNote}「${file.name}」新增 ${res.added} 笔待复核${res.skipped ? `，${res.skipped} 笔重复跳过` : ''}。${warn}`);
+      await openBatch(res.batch);
+    }
+    await refreshBatches();
+  }
+
+  /** 兜底按钮入口：对刚失败的文件跑 AI 认列（自带 busy/错误处理）。 */
+  async function runAiOn(file: File): Promise<void> {
+    setAiCandidate(null);
+    setBusy(true);
+    try {
+      await aiRecognize(file);
+    } catch (err) {
+      setMsg(`AI 认列失败：${isLlmError(err) ? err.message : err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onFile(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = e.target.files?.[0];
     e.target.value = ''; // 允许重选同名文件
@@ -139,24 +214,35 @@ export default function ImportReview({
       setMsg('请先选择导入到哪个全局账户。');
       return;
     }
+    setAiCandidate(null);
     setBusy(true);
     try {
+      if (source === MAPPED_SOURCE) {
+        await aiRecognize(file);
+        return;
+      }
       const parsed = await parseImportFile(source, file);
       const res = await createImportBatch(repo, { source, accountId: srcAccount, label: file.name }, parsed.rows);
       const warn = parsed.warnings.length ? `，${parsed.warnings.length} 行有提示被跳过` : '';
       if (!res.batch) {
-        setMsg(
-          parsed.rows.length === 0
-            ? `没从「${file.name}」解析出任何记录，请确认文件来源与格式是否匹配（如支付宝资金流水 CSV / 微信账单 xlsx）${warn}。`
-            : `「${file.name}」共 ${parsed.rows.length} 笔，全部已导入过、无新增${warn}。`,
-        );
+        if (parsed.rows.length === 0) {
+          setMsg(`没从「${file.name}」解析出任何记录，请确认文件来源与格式是否匹配（如支付宝资金流水 CSV / 微信账单 xlsx）${warn}。`);
+          if (isDesktop) setAiCandidate(file); // 兜底：也许是陌生银行的账单 → 一键转 AI 认列
+        } else {
+          setMsg(`「${file.name}」共 ${parsed.rows.length} 笔，全部已导入过、无新增${warn}。`);
+        }
       } else {
         setMsg(`「${file.name}」新增 ${res.added} 笔待复核${res.skipped ? `，${res.skipped} 笔重复跳过` : ''}${warn}。`);
         await openBatch(res.batch);
       }
       await refreshBatches();
     } catch (err) {
-      setMsg(`解析失败：${err instanceof Error ? err.message : String(err)}`);
+      if (source === MAPPED_SOURCE) {
+        setMsg(`AI 认列失败：${isLlmError(err) ? err.message : err instanceof Error ? err.message : String(err)}`);
+      } else {
+        setMsg(`解析失败：${err instanceof Error ? err.message : String(err)}`);
+        if (isDesktop) setAiCandidate(file);
+      }
     } finally {
       setBusy(false);
     }
@@ -397,12 +483,13 @@ export default function ImportReview({
         ) : (
           <>
           <div className="brow" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-            <select value={source} onChange={(e) => setSource(e.target.value as ImportSource)}>
+            <select value={source} onChange={(e) => setSource(e.target.value as UiSource)}>
               {(Object.keys(SOURCE_LABELS) as ImportSource[]).map((s) => (
                 <option key={s} value={s}>
                   {SOURCE_LABELS[s]}
                 </option>
               ))}
+              {isDesktop && <option value={MAPPED_SOURCE}>其它账单（AI 认列 · CSV/xlsx）</option>}
             </select>
             <span className="muted small">导入到</span>
             <select value={srcAccount} onChange={(e) => setSrcAccount(e.target.value)}>
@@ -412,7 +499,12 @@ export default function ImportReview({
                 </option>
               ))}
             </select>
-            <input type="file" accept={source === 'wechat-bill' ? '.xlsx' : '.csv,.txt'} disabled={busy} onChange={(e) => void onFile(e)} />
+            <input
+              type="file"
+              accept={source === 'wechat-bill' ? '.xlsx' : source === MAPPED_SOURCE ? '.csv,.txt,.xlsx' : '.csv,.txt'}
+              disabled={busy}
+              onChange={(e) => void onFile(e)}
+            />
           </div>
           {isDesktop && (
             <div className="brow" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 8, borderTop: '1px solid var(--line, #eee)', paddingTop: 8 }}>
@@ -424,6 +516,14 @@ export default function ImportReview({
           </>
         )}
         {msg && <p className="small" style={{ marginTop: 8 }}>{msg}</p>}
+        {aiCandidate && (
+          <p className="small" style={{ marginTop: 4 }}>
+            这可能是其它银行的账单——
+            <button className="lnk" disabled={busy} onClick={() => void runAiOn(aiCandidate)}>
+              用「AI 认列」试试这份文件
+            </button>
+          </p>
+        )}
       </div>
 
       {batches.length > 0 && (
