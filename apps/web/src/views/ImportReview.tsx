@@ -197,10 +197,11 @@ export default function ImportReview({
     const r = await repo.listStagingRows({ batchId: b.id, status: 'pending' });
     const m = await loadCounterpartyMemory(repo);
     // 出口①：逐行算核销建议（对方名精确命中客户/供应商 + 有未结清 → 建议核销）。生活账本自然无建议。
+    // suggestion 必传：仅真实收支行参与核销（unknown/transfer/refund 在 biz 层被排除，红线）。
     const sugMap = await suggestImportSettlements(
       repo,
       books,
-      r.map((row) => ({ id: row.id, direction: row.direction, payee: row.payee, amountMinor: row.amountMinor })),
+      r.map((row) => ({ id: row.id, direction: row.direction, payee: row.payee, amountMinor: row.amountMinor, suggestion: row.suggestion })),
       b.accountId,
       todayISO(),
     );
