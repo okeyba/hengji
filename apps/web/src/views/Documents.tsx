@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { toMinor } from '@app/core';
 import type { StoredFeeDefinition, StoredPluginDocument } from '@app/store';
 import type { AppData } from '../App';
@@ -76,7 +77,7 @@ export default function Documents({ data }: { data: AppData }) {
   }
 
   async function onVoid(doc: StoredPluginDocument): Promise<void> {
-    if (!confirm('作废这张单？将撤销它生成的记账分录（余额回退）。')) return;
+    if (!(await confirmAsk('作废这张单？将撤销它生成的记账分录（余额回退）。'))) return;
     setErr(null);
     try {
       await voidDocument(repo, doc);

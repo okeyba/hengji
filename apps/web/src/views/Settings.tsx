@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { confirmAsk } from '../confirm';
 import type { AccountingBasis } from '@app/core';
 import type { Repository, StoredSetting } from '@app/store';
 import { currencyDef } from '../format';
@@ -116,7 +117,7 @@ export default function Settings({
   async function removeCurrency(c: CurrencyDef): Promise<void> {
     setErr(null);
     if (usedCurrencies.has(c.code)) return setErr(`「${c.code}」已有账户在用，不能删除（先归档/改用其他币种的账户）`);
-    if (!confirm(`删除币种「${c.name} ${c.code}」？`)) return;
+    if (!(await confirmAsk(`删除币种「${c.name} ${c.code}」？`))) return;
     await persistCurrencies(custom.filter((x) => x.code !== c.code));
   }
 

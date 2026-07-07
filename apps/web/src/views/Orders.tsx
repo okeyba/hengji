@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { agingBuckets, computeFees, convertAmount, feesTotal, fromMinor, orderTotal, purchaseTotal, toMinor } from '@app/core';
 import type { FeeLine, OrderPaymentStatus, OrderStatus } from '@app/core';
 import type { StoredCustomer, StoredFeeDefinition, StoredInventoryMovement, StoredOrder, StoredProduct, StoredPurchase, StoredSettlement, StoredSupplier } from '@app/store';
@@ -260,7 +261,7 @@ export default function Orders({ data }: { data: AppData }) {
       setErr('本单已确认采购，不能直接取消（采购已产生账务，需手动反向处理）');
       return;
     }
-    if (!confirm(`取消订单（${custName(order.customerId)} · ${fmtMoney(orderTotal(order.lines), order.currency)}）？未采购订单无账务影响。`)) return;
+    if (!(await confirmAsk(`取消订单（${custName(order.customerId)} · ${fmtMoney(orderTotal(order.lines), order.currency)}）？未采购订单无账务影响。`))) return;
     for (const d of purchases.filter((p) => p.orderId === order.id && !p.txnId)) {
       await repo.removePurchase(d.id);
     }

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { fromMinor, toMinor } from '@app/core';
 import type { StoredProduct } from '@app/store';
 import type { AppData } from '../App';
@@ -125,7 +126,7 @@ export default function Products({ data }: { data: AppData }) {
   }
 
   async function toggleArchive(p: StoredProduct): Promise<void> {
-    if (!p.archived && !confirm(`归档「${p.name}」？归档后不在开单选商品中出现，可随时恢复。`)) return;
+    if (!p.archived && !(await confirmAsk(`归档「${p.name}」？归档后不在开单选商品中出现，可随时恢复。`))) return;
     await repo.updateProduct(p.id, { archived: !p.archived });
     await refresh();
   }

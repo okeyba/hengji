@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { accountBalance } from '@app/core';
 import type { AccountType } from '@app/core';
 import type { StoredAccount } from '@app/store';
@@ -100,7 +101,7 @@ export default function Accounts({ data }: { data: AppData }) {
       const msg = used
         ? `归档「${a.name}」？该账户已有交易记录，归档后会从记账下拉中隐藏，历史数据保留。`
         : `归档「${a.name}」？归档后会从记账下拉中隐藏，可随时恢复。`;
-      if (!confirm(msg)) return;
+      if (!(await confirmAsk(msg))) return;
     }
     await repo.updateAccount(a.id, { archived: !a.archived });
     await refresh();
