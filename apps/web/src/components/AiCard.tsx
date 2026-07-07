@@ -67,10 +67,26 @@ export default function AiCard({
     }
   }
 
-  /** 开关立即生效（开关本身就是隐私闸门，不该等「保存」按钮）。 */
+  /**
+   * 开关立即生效（开关本身就是隐私闸门，不该等「保存」按钮）。
+   * 基于**已持久化**的配置只改 enabled——绝不连带保存表单里的半成品编辑（那是「保存配置」按钮的活）；
+   * 保存失败回滚勾选（隐私总开关的显示态必须与持久化态一致）。
+   */
   async function toggleEnabled(on: boolean): Promise<void> {
     setEnabled(on);
-    await saveConfig({ enabled: on });
+    setBusy(true);
+    setNote('');
+    try {
+      const persisted = aiConfigOf(settings);
+      await repo.setSetting(APP_SCOPE, AI_CONFIG_KEY, JSON.stringify({ ...persisted, enabled: on }));
+      await reload();
+      setNote(on ? '已开启（服务商配置改动仍需点「保存配置」）。' : '已关闭。');
+    } catch (e) {
+      setEnabled(!on);
+      setNote(`保存失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   function applyPreset(id: string): void {
@@ -104,6 +120,9 @@ export default function AiCard({
       await llmClearKey();
       setKeySet(false);
       setNote('已清除 API Key。');
+    } catch (e) {
+      // 删除失败绝不显示假成功（Rust 侧带重试+存在性校验，失败=文件真删不掉）
+      setNote(`清除失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -147,9 +166,10 @@ export default function AiCard({
     <div className="card">
       <h3>AI 智能认列（云 · 自带 Key）</h3>
       <p className="muted small">
-        默认关闭。开启后，导入<b>陌生银行账单</b>时可把「表头 + 前 25 行样本」发给你自己配置的 AI
-        服务商识别列结构（同一银行第二次导入会先用本地记忆、不再上云）；金额解析、去重、记账全部仍在本地完成。
-        支付宝 / 微信账单与图片识别不受影响、从不上云。
+        默认关闭。开启后解锁两种上云用途（每次外发前都会再弹窗确认）：① 导入<b>陌生银行账单</b>时把
+        「文件名 + 表头 + 最多前 25 行样本」发给你配置的 AI 服务商识别列结构（同一银行第二次导入先用本地记忆、不再上云）；
+        ② <b>语音记账</b>时把你核对过的转写文本发给它生成草稿（音频本身永不上传）。
+        金额解析、去重、记账全部仍在本地完成；支付宝 / 微信账单与图片识别从不上云。
       </p>
       <label className="chkline">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={(e) => void toggleEnabled(e.target.checked)} />

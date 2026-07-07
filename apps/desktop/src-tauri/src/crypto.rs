@@ -438,7 +438,9 @@ mod engine {
         for f in [ENVELOPE, ENVELOPE_NEW, MIGRATE_MARKER, SECURITY_FILE] {
             let _ = std::fs::remove_file(dir.join(f));
         }
-        crate::llm::clear_key(dir); // 增量4·4b：DPAPI 密钥文件（heng.apikey）随清空一并删
+        // 增量4·4b：DPAPI 密钥文件（heng.apikey）随清空一并删。删失败容忍：密文绑本机本用户，
+        // 残留不可解且下次保存 Key 会覆盖；不因它拦整个清空（库才是数据泄漏面）。
+        let _ = crate::llm::clear_key(dir);
 
         let db = dir.join(DB_FILE);
         // 删库带退避重试 + 校验真消失（同 rename_with_retry 的理由）：Windows 下刚 `*conn=None` 的库文件句柄

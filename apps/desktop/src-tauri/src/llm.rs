@@ -87,9 +87,18 @@ fn store_key(dir: &Path, key: &str) -> Result<(), LlmError> {
     std::fs::rename(&tmp, key_path(dir)).map_err(|e| LlmError::internal(e.to_string()))
 }
 
-/// 删除密钥文件（幂等；不存在也 Ok）。供 llm_clear_key 与 wipe 复用。
-pub(crate) fn clear_key(dir: &Path) {
-    let _ = std::fs::remove_file(key_path(dir));
+/// 删除密钥文件（幂等；不存在也 Ok）——**删后校验确实消失**（对齐 074c806 教训：Windows 句柄
+/// 延迟释放/只读属性会让裸 remove_file 静默失败，UI 显示「已清除」而密文仍在＝安全操作假成功）。
+pub(crate) fn clear_key(dir: &Path) -> Result<(), LlmError> {
+    let p = key_path(dir);
+    for i in 0..8u32 {
+        let _ = std::fs::remove_file(&p);
+        if !p.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(30 * u64::from(i + 1)));
+    }
+    Err(LlmError::internal("清除失败：密钥文件被占用，无法删除，请稍后重试"))
 }
 
 /// 读回明文 key（Zeroizing：用完清零）。文件缺失 → no_key；DPAPI 解密失败（换机/换用户/篡改）→ internal。
@@ -377,23 +386,24 @@ pub fn llm_set_key(app: AppHandle, key: String) -> Result<(), LlmError> {
     store_key(&dir, key.as_str())
 }
 
-/// 清除已存的 API Key。
+/// 清除已存的 API Key（删除失败如实上报，绝不假成功）。
 #[tauri::command]
-pub fn llm_clear_key(app: AppHandle) -> Result<(), String> {
-    let dir = config_dir(&app)?;
-    clear_key(&dir);
-    Ok(())
+pub fn llm_clear_key(app: AppHandle) -> Result<(), LlmError> {
+    let dir = config_dir(&app).map_err(|e| LlmError::internal(e))?;
+    clear_key(&dir)
 }
 
 /// 发一次补全。key 从 DPAPI 密钥文件读出（不跨 IPC）。
-/// **在全新 OS 线程跑 reqwest blocking**：脱离 tauri/tokio 环境，杜绝「runtime within a runtime」panic。
+/// **async**：同步命令在主线程内联执行，join 等待网络往返会冻住 UI（窗口拖动/并发 IPC 全排队）；
+/// async 命令挪到 runtime 线程池。内层仍用全新 OS 线程跑 reqwest blocking（脱离 tokio 环境）。
 #[tauri::command]
-pub fn llm_complete(app: AppHandle, req: LlmRequest) -> Result<LlmResponse, LlmError> {
+pub async fn llm_complete(app: AppHandle, req: LlmRequest) -> Result<LlmResponse, LlmError> {
     let dir = config_dir(&app).map_err(|e| LlmError::internal(e))?;
     let key = load_key(&dir)?;
-    std::thread::spawn(move || http::complete(&req, key.as_str()))
-        .join()
-        .map_err(|_| LlmError::internal("HTTP 线程异常终止"))?
+    let handle = std::thread::spawn(move || http::complete(&req, key.as_str()));
+    tauri::async_runtime::spawn_blocking(move || handle.join().map_err(|_| LlmError::internal("HTTP 线程异常终止"))?)
+        .await
+        .map_err(|e| LlmError::internal(format!("任务调度失败: {e}")))?
 }
 
 #[cfg(all(test, windows))]
@@ -409,7 +419,7 @@ mod tests {
     #[test]
     fn dpapi_roundtrip_and_key_store() {
         let dir = tmp_dir();
-        clear_key(&dir);
+        clear_key(&dir).unwrap();
         assert!(!key_present(&dir), "初始无 key");
         assert_eq!(load_key(&dir).unwrap_err().kind, "no_key");
 
@@ -425,7 +435,7 @@ mod tests {
         // 空 key 拒
         assert_eq!(store_key(&dir, "   ").unwrap_err().kind, "config");
 
-        clear_key(&dir);
+        clear_key(&dir).unwrap();
         assert!(!key_present(&dir), "清除后无 key");
         let _ = std::fs::remove_dir_all(&dir);
     }

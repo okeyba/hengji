@@ -94,6 +94,13 @@ describe('tryRememberedSpecs（本地记忆重放，零上云）', () => {
     expect(hit!.spec.bankName).toBe('甲银行');
   });
 
+  it('signed 记忆重放全部行同向 → 亮告警（误配「借贷标记列」银行的强信号）', () => {
+    const csv = '交易日期,摘要,交易金额,对方户名\n2026-07-01,消费,8.00,甲\n2026-07-02,消费,9.00,乙\n2026-07-03,消费,10.00,丙';
+    const hit = tryRememberedSpecs([BANK_SPEC], { kind: 'csv', text: csv });
+    expect(hit!.result.rows).toHaveLength(3);
+    expect(hit!.result.warnings.some((w) => w.includes('全部行方向一致'))).toBe(true);
+  });
+
   it('xlsx 矩阵路径同样可重放', () => {
     const matrix = [
       ['交易日期', '摘要', '交易金额', '对方户名'],

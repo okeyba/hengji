@@ -47,7 +47,9 @@ export function decodeSmart(buf: ArrayBuffer): string {
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(buf);
   const utf8 = new TextDecoder('utf-8').decode(buf);
   const badUtf8 = countBad(utf8);
-  if (badUtf8 === 0) return utf8;
+  // 极少量替换符（如尾部截断半个多字节字符）→ 保留 UTF-8：GB18030 几乎能解任何字节流成
+  // 「零替换符的乱码」，阈值防止一个坏字节把整份 UTF-8 文件翻成 GBK 乱码
+  if (badUtf8 <= 2) return utf8;
   try {
     const gbk = new TextDecoder('gb18030').decode(buf);
     return countBad(gbk) < badUtf8 ? gbk : utf8;
@@ -110,7 +112,14 @@ export function tryRememberedSpecs(specs: MappedImportSpec[], input: BillInput):
   for (const spec of specs) {
     try {
       const result = parseWith(spec, input);
-      if (result.rows.length > 0) return { result, spec, fromMemory: true };
+      if (result.rows.length > 0) {
+        // 误配盲区：signed 记忆 spec 撞上「全正金额+借贷标记列」的另一家银行时，全部行会被
+        // 静默解成同一方向且零告警——全同向是强信号，亮出来供人核对（复核台仍是最终闸门）
+        if (spec.amount.mode === 'signed' && result.rows.length >= 3 && result.rows.every((r) => r.direction === result.rows[0]!.direction)) {
+          result.warnings.push('全部行方向一致（按带符号金额解析）——若该账单实际用「借/贷」标记列表示方向，请核对方向或换用 AI 重新认列');
+        }
+        return { result, spec, fromMemory: true };
+      }
     } catch {
       // 单个坏 spec（列冲突等）不拦路，继续试下一份
     }
