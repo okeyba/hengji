@@ -186,10 +186,34 @@ pub fn db_batch(db: State<Db>, stmts: Vec<Stmt>) -> Result<(), String> {
     run_batch(conn, &stmts).map_err(|e| e.to_string())
 }
 
+/// 把 WAL 落回主库（TRUNCATE）再关闭连接；无连接时 no-op。
+/// F2 备份教训：若只让进程退出、连接从不关闭，真实数据会长期只悬在 `-wal` 边车、
+/// 主库文件停在旧 checkpoint——用户手工拷走 heng.db 单文件时拿到的是旧数据。
+/// 库+WAL 作为整体永不丢数据（失败时 WAL 保留、下次开库自动恢复）；结果只关乎「单文件拷贝可信否」：
+/// Ok(true)=落干净；Ok(false)=BUSY 没落干净（有并发连接，-wal 保留）；Err=checkpoint 中途出错
+/// （磁盘满/IO 错——主库文件可能新旧页混杂，单文件拷贝此刻不可信）。连接无论结果都会关闭。
+pub fn close_with_checkpoint(db: &Db) -> Result<bool, String> {
+    // 退出路径是尽力而为：mutex 中毒（此前有线程持锁 panic）也照样拿 guard 完成 flush。
+    let Some(conn) = db.0.lock().unwrap_or_else(|p| p.into_inner()).take() else {
+        return Ok(true);
+    };
+    // PRAGMA wal_checkpoint 把 BUSY 折进结果行第一列（busy=1）而不报 Err——必须读行，
+    // execute_batch 会丢弃结果集、探测不到没落干净。
+    let res = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
+    let _ = conn.close();
+    match res {
+        Ok(0) => Ok(true),
+        Ok(_) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 pub fn db_close(db: State<Db>) -> Result<(), String> {
-    *db.0.lock().unwrap() = None; // drop 即关闭连接
-    Ok(())
+    // busy（Ok(false)）不算错：连接已关、数据完整，只是 -wal 尚未折叠。硬错误如实上报。
+    close_with_checkpoint(&db)
+        .map(|_| ())
+        .map_err(|e| format!("关库 checkpoint 失败（数据仍完整、靠 -wal 下次自动恢复；但此刻单文件拷贝不可信）：{e}"))
 }
 
 #[cfg(test)]
@@ -265,6 +289,48 @@ mod tests {
     fn rejects_bad_dek_hex() {
         assert!(open_db(Path::new(":memory:"), Some("tooshort")).is_err());
         assert!(open_db(Path::new(":memory:"), Some(&"z".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn close_with_checkpoint_flushes_wal_into_main_file() {
+        // F2 契约：干净关库后，用户「只拷 heng.db 单文件」也必须拿到全部数据
+        // （WAL 模式下写入先进 -wal；不 checkpoint 就退出 → 主库文件停在旧时点）。
+        let base = std::env::temp_dir().join(format!("heng-ckpt-test-{}.db", std::process::id()));
+        let copy = std::env::temp_dir().join(format!("heng-ckpt-copy-{}.db", std::process::id()));
+        let cleanup = |p: &Path| {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}-wal", p.display())));
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}-shm", p.display())));
+        };
+        cleanup(&base);
+        cleanup(&copy);
+        let db = Db(Mutex::new(Some(open_db(&base, None).unwrap())));
+        {
+            let guard = db.0.lock().unwrap();
+            let conn = guard.as_ref().unwrap();
+            conn.execute_batch("CREATE TABLE t(x TEXT); INSERT INTO t VALUES('in-wal');").unwrap();
+        }
+        // 前置断言：数据此刻确实悬在 -wal（若 WAL 模式静默失效，本测试就没在测目标场景）。
+        let wal = PathBuf::from(format!("{}-wal", base.display()));
+        assert!(
+            wal.exists() && std::fs::metadata(&wal).unwrap().len() > 0,
+            "写入后 -wal 应存在且非空（WAL 模式生效）"
+        );
+        assert_eq!(close_with_checkpoint(&db), Ok(true), "无并发时 checkpoint 应落干净");
+        assert!(db.0.lock().unwrap().is_none(), "连接应已关闭");
+        // 关库后 -wal 应被删除（末连接关闭）或至少被 TRUNCATE 清空。
+        assert!(
+            !wal.exists() || std::fs::metadata(&wal).unwrap().len() == 0,
+            "关库后 -wal 应已删除或清空"
+        );
+        // 模拟手工备份：只拷主库文件（不带 -wal/-shm）到新路径，数据必须完整。
+        std::fs::copy(&base, &copy).unwrap();
+        let conn = Connection::open(&copy).unwrap();
+        let v: String = conn.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "in-wal", "checkpoint 后主库单文件应含全部数据");
+        drop(conn);
+        cleanup(&base);
+        cleanup(&copy);
     }
 
     #[test]
