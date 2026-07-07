@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { fromMinor, toMinor } from '@app/core';
 import type { FeeCalcType, FeeTier } from '@app/core';
 import type { StoredFeeDefinition } from '@app/store';
@@ -115,7 +116,7 @@ export default function FeeDefinitions({ data }: { data: AppData }) {
   }
 
   async function toggleArchive(f: StoredFeeDefinition): Promise<void> {
-    if (!f.archived && !confirm(`归档「${f.name}」？归档后开单不再可选，历史订单已记的费用不受影响。`)) return;
+    if (!f.archived && !(await confirmAsk(`归档「${f.name}」？归档后开单不再可选，历史订单已记的费用不受影响。`))) return;
     await repo.updateFeeDefinition(f.id, { archived: !f.archived });
     if (editId === f.id) resetForm();
     await refresh();

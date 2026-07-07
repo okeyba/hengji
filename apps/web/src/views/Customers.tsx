@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import type { StoredCustomer } from '@app/store';
 import type { AppData } from '../App';
 import { genId } from '../db';
@@ -67,7 +68,7 @@ export default function Customers({ data }: { data: AppData }) {
         owed > 0
           ? `「${c.name}」还有应收 ${fmtMoney(owed, convert.display)} 未收清，仍要归档？归档后不在新建订单中出现，历史保留。`
           : `归档「${c.name}」？归档后不在新建订单中出现，可随时恢复。`;
-      if (!confirm(msg)) return;
+      if (!(await confirmAsk(msg))) return;
     }
     await repo.updateCustomer(c.id, { archived: !c.archived });
     await refresh();

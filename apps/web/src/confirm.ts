@@ -6,8 +6,8 @@ import { isDesktop } from './db';
  * 真机实测：AI 认列/语音上云、清除 Key 等在无弹窗下直接执行），浏览器 demo 退回 `window.confirm`。
  * 返回 true=用户确认继续。
  *
- * 注：本包装器目前只覆盖增量4（AI 认列/语音/AI 卡）的确认点；全 app 其余 `window.confirm`
- * （安全清空/移除密码/删交易/取消订单等，含已发布代码）同样受 no-op 影响，留另一分支统一整改。
+ * 覆盖全 app 的确认点（AI 认列/语音上云、安全清空/移除密码、删交易/取消订单/作废/归档/删币种等）——
+ * 桌面统一走原生框，杜绝 window.confirm no-op 静默放行破坏性/外发操作。
  */
 export const confirmAsk = (message: string): Promise<boolean> =>
   isDesktop ? confirmNative(message) : Promise.resolve(window.confirm(message));

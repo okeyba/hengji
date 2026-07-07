@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { confirmAsk } from './confirm';
 import { accountBalance, convertAmount, outstandingCharges, unclearedCount } from '@app/core';
 import type { AccountingBasis, BookType, ConvertCtx } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredCustomer, StoredFeeDefinition, StoredOrder, StoredSetting, StoredSettlement, StoredSupplier, StoredTransaction } from '@app/store';
@@ -332,7 +333,7 @@ export default function App() {
 
   async function archiveBook(): Promise<void> {
     if (!repo || !curBook) return;
-    if (!confirm(`归档「${curBook.name}」？账本会从列表隐藏，数据保留且总表不再计入。`)) return;
+    if (!(await confirmAsk(`归档「${curBook.name}」？账本会从列表隐藏，数据保留且总表不再计入。`))) return;
     await repo.updateBook(curBook.id, { archived: true });
     await loadFrom(repo);
     openBook('all');

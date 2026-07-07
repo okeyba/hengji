@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import type { Repository, StoredSetting } from '@app/store';
 import {
   changePassword,
@@ -140,7 +141,7 @@ export default function SecurityCard({
     if (busy) return;
     setErr(null);
     if (oldPw.length < 1) return setErr('请输入当前密码。');
-    if (!confirm('移除密码后，数据库会解密为明文——任何拿到文件的人都能直接打开。确定移除？')) return;
+    if (!(await confirmAsk('移除密码后，数据库会解密为明文——任何拿到文件的人都能直接打开。确定移除？'))) return;
     setBusy(true);
     try {
       await removePassword(oldPw); // Rust：验证口令 + 密文→明文迁移 + 拆封装
@@ -171,9 +172,9 @@ export default function SecurityCard({
     const enc = status?.encrypted ?? false;
     if (enc && wipePw.length < 1) return setWipeMsg('请输入密码以确认是你本人。');
     if (
-      !confirm(
+      !(await confirmAsk(
         '确定清空全部数据？这会【永久删除】所有账本、流水、设置，本机无法找回。\n建议先导出一份备份再清空。确定继续？',
-      )
+      ))
     )
       return;
     setWiping(true);

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { accountBalance, adjustBalanceEntry, expandEntry, matchStatement, toMinor, unclearedCount } from '@app/core';
 import type { EntryInput, StatementItem } from '@app/core';
 import type { Repository, StoredAccount, StoredBook, StoredReconciliation, StoredTransaction } from '@app/store';
@@ -332,7 +333,7 @@ export default function Reconcile({
     const warn = row.cleared
       ? '这笔已核销，删除会影响已完成的对账记录。确定删除整笔交易？'
       : '删除整笔交易（含其对方分录）？此操作不可撤销。';
-    if (!confirm(warn)) return;
+    if (!(await confirmAsk(warn))) return;
     setBusy(true);
     setErr(null);
     try {

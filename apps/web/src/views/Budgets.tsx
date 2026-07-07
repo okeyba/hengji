@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { budgetUsage, toMinor } from '@app/core';
 import type { AppData } from '../App';
 import { genId } from '../db';
@@ -80,7 +81,7 @@ export default function Budgets({ data }: { data: AppData }) {
                     className="del"
                     title="删除预算"
                     onClick={async () => {
-                      if (confirm('删除该预算？')) {
+                      if (await confirmAsk('删除该预算？')) {
                         await repo.removeBudget(budget.id);
                         await reload();
                       }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { confirmAsk } from '../confirm';
 import { agingBuckets, convertAmount, fromMinor, outstandingCharges, toMinor } from '@app/core';
 import type { StoredSupplier } from '@app/store';
 import type { AppData } from '../App';
@@ -94,7 +95,7 @@ export default function Suppliers({ data }: { data: AppData }) {
         owed > 0
           ? `「${s.name}」还有应付 ${fmtMoney(owed, convert.display)} 未付清，仍要归档？归档后不在进货赊账中出现，历史保留。`
           : `归档「${s.name}」？归档后不在进货赊账中出现，可随时恢复。`;
-      if (!confirm(msg)) return;
+      if (!(await confirmAsk(msg))) return;
     }
     await repo.updateSupplier(s.id, { archived: !s.archived });
     await refresh();
