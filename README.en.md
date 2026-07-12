@@ -14,9 +14,9 @@ Open-source, local-first **double-entry accounting**. Rigorous double-entry unde
 
 ## ⬇️ Download
 
-**[Download the latest release (Windows)](https://github.com/sailorsinbad14/hengji/releases/latest)** — double-click `Hengji_0.3.0_x64-setup.exe`, install, and go. No dev environment required; **your data lives 100% on your machine, never uploaded**.
+**[Download the latest release (Windows)](https://github.com/sailorsinbad14/hengji/releases/latest)** — double-click `Hengji_0.4.0_x64-setup.exe`, install, and go. No dev environment required; **your data lives 100% on your machine, never uploaded**.
 
-> Current version v0.3.0, Windows x64 only, unsigned. On the SmartScreen "unknown publisher" prompt, choose **"More info → Run anyway"**. To build from source or contribute, see the [Developer guide](docs/en/development.md).
+> Current version v0.4.0, Windows x64 only, unsigned. On the SmartScreen "unknown publisher" prompt, choose **"More info → Run anyway"**. To build from source or contribute, see the [Developer guide](docs/en/development.md).
 
 ## 🚀 Get started in 3 minutes
 
@@ -44,6 +44,8 @@ For deeper usage, see the **[User manual](docs/en/README.md)**.
 - **Minimal mode (default)**: regular users only see Overview / Transactions / Budgets / Accounts; pro features stay hidden until you enable them under "Settings → Enable merchant pro features" — no upfront overwhelm.
 - **Double-entry core, single-entry feel**: always balanced, integer-cent amounts with no float errors; you just "log an entry" and the postings are generated for you.
 - **Merchant pro features** (one toggle): inventory ([products & stock](docs/en/inventory.md) / [purchasing](docs/en/purchases.md)), [orders & A/R](docs/en/orders.md), [extra fees & formula engine](docs/en/fees.md), [monthly reconciliation](docs/en/reconciliation.md), [multi-currency](docs/en/multi-currency.md), [accounting basis](docs/en/settings.md).
+- **Bill import + AI entry**: one-click import of Alipay / WeChat statements, on-device OCR for payment screenshots (nothing uploaded); speak an entry into the books (local transcription); optionally bring your own AI key for auto-categorization — **the books are always computed by the deterministic engine**, with a review desk for line-by-line approval and whole-batch undo.
+- **Local encryption (security chip)**: set a password and your data is encrypted with a random key sealed by your PC's TPM chip — the database file is useless if copied to another machine.
 - **Local-first & private**: data lives in a local SQLite file on your device — no network, no upload. (A future optional paid cloud sync is a separate, end-to-end-encrypted feature.)
 
 ## 🧭 Who it's for
