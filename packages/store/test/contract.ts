@@ -361,6 +361,47 @@ export function runRepositoryContract(name: string, makeRepo: (now: Clock) => Re
     });
   });
 
+  describe(`${name} · 周期记账`, () => {
+    const rrule = (id: string, bookId: string, overrides: Partial<Parameters<Repository['addRecurringRule']>[0]> = {}) => ({
+      id,
+      bookId,
+      active: true,
+      kind: 'expense' as const,
+      categoryAccountId: 'food',
+      assetAccountId: 'bank',
+      fromAccountId: null,
+      toAccountId: null,
+      amount: 300000,
+      currency: 'CNY',
+      payee: '房租',
+      note: '',
+      tags: [],
+      dayOfMonth: 5,
+      nextDueDate: '2026-06-05',
+      endDate: null,
+      ...overrides,
+    });
+
+    it('add/list/update/remove + includeInactive + bookId 过滤', async () => {
+      const repo = await seed(makeRepo(fakeClock()));
+      const r1 = await repo.addRecurringRule(rrule('r1', B1));
+      expect(r1.deleted).toBe(false);
+      await repo.addRecurringRule(rrule('r2', B2, { categoryAccountId: 'b2supply', assetAccountId: 'b2bank' }));
+      await repo.addRecurringRule(rrule('r3', B1, { active: false }));
+      expect((await repo.listRecurringRules()).map((x) => x.id).sort()).toEqual(['r1', 'r2']); // 默认排除未启用
+      expect((await repo.listRecurringRules({ includeInactive: true })).length).toBe(3);
+      expect((await repo.listRecurringRules({ bookId: B1 })).map((x) => x.id)).toEqual(['r1']);
+      const u = await repo.updateRecurringRule('r1', { nextDueDate: '2026-07-05' });
+      expect(u.nextDueDate).toBe('2026-07-05');
+      await repo.removeRecurringRule('r2');
+      expect((await repo.listRecurringRules({ includeInactive: true })).map((x) => x.id).sort()).toEqual(['r1', 'r3']);
+      await expect(repo.addRecurringRule(rrule('r1', B1))).rejects.toThrow();
+      await expect(repo.addRecurringRule(rrule('r4', 'nope-book'))).rejects.toThrow(/账本不存在/);
+      await expect(repo.updateRecurringRule('nope', { nextDueDate: '2026-08-01' })).rejects.toThrow();
+      await expect(repo.removeRecurringRule('nope')).rejects.toThrow();
+    });
+  });
+
   describe(`${name} · 生意（客户/订单/收款）`, () => {
     const cust = (id: string, bookId: string, name: string, dueDays = 0, archived = false) => ({
       id,

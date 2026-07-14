@@ -1,4 +1,4 @@
-import type { Account, Book, Direction, DraftSuggestion, FeeDefinition, FeeTier, InventoryKind, OrderLine, Posting, PurchaseKind, PurchaseLine, SettlementDirection, StagingBatchStatus, StagingRowStatus, CounterpartyType, OrderStatus } from '@app/core';
+import type { Account, Book, Direction, DraftSuggestion, FeeDefinition, FeeTier, InventoryKind, OrderLine, Posting, PurchaseKind, PurchaseLine, RecurringRule, SettlementDirection, StagingBatchStatus, StagingRowStatus, CounterpartyType, OrderStatus } from '@app/core';
 import type {
   StoredAccount,
   StoredBook,
@@ -10,6 +10,7 @@ import type {
   StoredPluginDocument,
   StoredProduct,
   StoredPurchase,
+  StoredRecurringRule,
   StoredStagingBatch,
   StoredStagingRow,
   StoredSupplier,
@@ -256,6 +257,52 @@ export function toBudget(r: BudgetRow): StoredBudget {
     bookId: r.book_id,
     accountId: r.account_id,
     monthlyLimit: r.monthly_limit,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deleted: r.deleted !== 0,
+  };
+}
+
+export interface RecurringRuleRow {
+  id: string;
+  book_id: string;
+  active: number;
+  kind: string;
+  category_account_id: string | null;
+  asset_account_id: string | null;
+  from_account_id: string | null;
+  to_account_id: string | null;
+  amount: number;
+  currency: string;
+  payee: string;
+  note: string;
+  tags: string;
+  day_of_month: number;
+  next_due_date: string;
+  end_date: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted: number;
+}
+
+export function toRecurringRule(r: RecurringRuleRow): StoredRecurringRule {
+  return {
+    id: r.id,
+    bookId: r.book_id,
+    active: r.active !== 0,
+    kind: r.kind as RecurringRule['kind'],
+    categoryAccountId: r.category_account_id,
+    assetAccountId: r.asset_account_id,
+    fromAccountId: r.from_account_id,
+    toAccountId: r.to_account_id,
+    amount: r.amount,
+    currency: r.currency,
+    payee: r.payee,
+    note: r.note,
+    tags: parseTags(r.tags),
+    dayOfMonth: r.day_of_month,
+    nextDueDate: r.next_due_date,
+    endDate: r.end_date,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     deleted: r.deleted !== 0,

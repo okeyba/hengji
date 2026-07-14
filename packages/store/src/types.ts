@@ -1,4 +1,4 @@
-import type { Account, Book, Budget, Customer, DraftSuggestion, FeeDefinition, FeeTier, InventoryMovement, Order, OrderStatus, PluginDocument, Product, Purchase, PurchaseLine, Reconciliation, Settlement, StagingBatch, StagingBatchStatus, StagingRow, StagingRowStatus, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, DraftSuggestion, FeeDefinition, FeeTier, InventoryMovement, Order, OrderStatus, PluginDocument, Product, Purchase, PurchaseLine, Reconciliation, RecurringRule, Settlement, StagingBatch, StagingBatchStatus, StagingRow, StagingRowStatus, Supplier, Transaction } from '@app/core';
 
 /** 每条记录都带的同步元数据，为将来的云同步预留。 */
 export interface SyncMeta {
@@ -12,6 +12,7 @@ export type StoredBook = Book & SyncMeta;
 export type StoredAccount = Account & SyncMeta;
 export type StoredTransaction = Transaction & SyncMeta;
 export type StoredBudget = Budget & SyncMeta;
+export type StoredRecurringRule = RecurringRule & SyncMeta;
 export type StoredCustomer = Customer & SyncMeta;
 export type StoredSupplier = Supplier & SyncMeta;
 export type StoredOrder = Order & SyncMeta;
@@ -57,6 +58,23 @@ export interface AccountPatch {
 export interface BudgetPatch {
   accountId?: string;
   monthlyLimit?: number;
+}
+
+export interface RecurringRulePatch {
+  active?: boolean;
+  kind?: RecurringRule['kind'];
+  categoryAccountId?: string | null;
+  assetAccountId?: string | null;
+  fromAccountId?: string | null;
+  toAccountId?: string | null;
+  amount?: number;
+  currency?: string;
+  payee?: string;
+  note?: string;
+  tags?: string[];
+  dayOfMonth?: number;
+  nextDueDate?: string;
+  endDate?: string | null;
 }
 
 export interface CustomerPatch {
@@ -173,6 +191,14 @@ export interface Repository {
   listBudgets(query?: { bookId?: string }): Promise<StoredBudget[]>;
   updateBudget(id: string, patch: BudgetPatch): Promise<StoredBudget>;
   removeBudget(id: string): Promise<void>;
+
+  // 周期记账模板（工资/房租/分期等每月固定记账）：存模板，不存 txn 快照。确认/跳过编排在
+  // web 层（apps/web/src/recurring.ts），用 repo.transaction 包 addTransaction + updateRecurringRule
+  // 保证「交易写成功 + nextDueDate 推进」原子——避免半截推进导致下次重复生成。
+  addRecurringRule(rule: RecurringRule): Promise<StoredRecurringRule>;
+  listRecurringRules(opts?: { bookId?: string; includeInactive?: boolean }): Promise<StoredRecurringRule[]>;
+  updateRecurringRule(id: string, patch: RecurringRulePatch): Promise<StoredRecurringRule>;
+  removeRecurringRule(id: string): Promise<void>;
 
   // 生意（v0.2 B 期）：客户 / 订单 / 收款。约束（实现负责校验）：
   // - 客户/订单/收款必须挂在已存在的账本上；

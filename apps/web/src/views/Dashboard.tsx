@@ -1,7 +1,8 @@
-import { accountBalance, balancesByCurrency, convertAmount, incomeExpense, netWorth, unclearedCount } from '@app/core';
+import { accountBalance, balancesByCurrency, convertAmount, incomeExpense, netWorth, pendingRecurring, unclearedCount } from '@app/core';
 import type { AppData } from '../App';
-import { currencyDef, currentMonth, fmtMoney } from '../format';
+import { currencyDef, currentMonth, fmtMoney, todayISO } from '../format';
 import { receivableAccountIds, receivableSummary } from '../biz';
+import RecurringRow from '../components/RecurringRow';
 import TxnRow from '../components/TxnRow';
 import QuickEntry from './QuickEntry';
 
@@ -49,8 +50,9 @@ function Donut({ slices, total, display }: { slices: Array<{ name: string; value
 }
 
 export default function Dashboard({ data }: { data: AppData }) {
-  const { accounts, txns, allTxns, book, basis, convert } = data;
+  const { accounts, txns, allTxns, book, basis, convert, recurringRules } = data;
   const month = currentMonth();
+  const pending = pendingRecurring(recurringRules, todayISO());
   const period = { from: `${month}-01`, to: `${month}-31` };
   // 账户全局化：本账本净额 = 专属（非全局）资产−负债；可用资金 = 全局共享账户（余额散落多账本→用全量 txns）。
   const bookScoped = accounts.filter((a) => !a.global);
@@ -128,6 +130,16 @@ export default function Dashboard({ data }: { data: AppData }) {
           <div className={`v sm${book.type === 'business' ? ' biz' : ''}`}>{fmtMoney(ie.net, display)}</div>
         </div>
       </div>
+      {pending.length > 0 && (
+        <div className="card">
+          <h3>
+            待确认周期记账 <span className="mini">{pending.length} 项</span>
+          </h3>
+          {pending.map((p) => (
+            <RecurringRow key={p.rule.id} item={p} data={data} />
+          ))}
+        </div>
+      )}
       <div className="mid">
         <div className="card">
           <h3>

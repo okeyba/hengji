@@ -166,6 +166,11 @@ input:focus, select:focus { outline: 2px solid var(--brand-50); border-color: va
 .bar i { display: block; height: 100%; background: var(--brand); border-radius: 999px; }
 .bar i.over { background: var(--neg); }
 
+/* 周期记账 */
+.rr-row .bhead { flex-wrap: wrap; }
+.rr-actions { display: flex; align-items: center; gap: 8px; }
+.rr-actions input { width: 100px; }
+
 /* 账本切换器 */
 .book {
   display: flex; align-items: center; gap: 8px;

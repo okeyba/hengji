@@ -1,5 +1,5 @@
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Product, Purchase, Reconciliation, Settlement, StagingBatch, StagingBatchStatus, StagingRow, StagingRowStatus, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Product, Purchase, Reconciliation, RecurringRule, Settlement, StagingBatch, StagingBatchStatus, StagingRow, StagingRowStatus, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -10,6 +10,7 @@ import type {
   OrderPatch,
   ProductPatch,
   PurchasePatch,
+  RecurringRulePatch,
   Repository,
   StagingBatchPatch,
   StagingRowPatch,
@@ -24,6 +25,7 @@ import type {
   StoredProduct,
   StoredPurchase,
   StoredReconciliation,
+  StoredRecurringRule,
   StoredSetting,
   StoredSettlement,
   StoredStagingBatch,
@@ -52,6 +54,7 @@ export class InMemoryRepository implements Repository {
   private readonly accounts = new Map<string, StoredAccount>();
   private readonly txns = new Map<string, StoredTransaction>();
   private readonly budgets = new Map<string, StoredBudget>();
+  private readonly recurringRules = new Map<string, StoredRecurringRule>();
   private readonly customers = new Map<string, StoredCustomer>();
   private readonly suppliers = new Map<string, StoredSupplier>();
   private readonly orders = new Map<string, StoredOrder>();
@@ -74,7 +77,7 @@ export class InMemoryRepository implements Repository {
   /** 所有数据表（固定顺序）——transaction 快照/还原用。 */
   private allMaps(): Map<string, unknown>[] {
     return [
-      this.books, this.accounts, this.txns, this.budgets, this.customers, this.suppliers,
+      this.books, this.accounts, this.txns, this.budgets, this.recurringRules, this.customers, this.suppliers,
       this.orders, this.settlements, this.products, this.feeDefinitions, this.purchases,
       this.settings, this.reconciliations, this.inventoryMovements, this.pluginDocuments,
       this.stagingBatches, this.stagingRows,
@@ -277,6 +280,41 @@ export class InMemoryRepository implements Repository {
     const b = this.budgets.get(id);
     if (!b || b.deleted) throw new Error(`预算不存在：${id}`);
     this.budgets.set(id, { ...b, deleted: true, updatedAt: this.now() });
+  }
+
+  // ---- 周期记账 ----
+  async addRecurringRule(rule: RecurringRule): Promise<StoredRecurringRule> {
+    if (this.recurringRules.has(rule.id)) throw new Error(`周期记账规则已存在：${rule.id}`);
+    this.liveBook(rule.bookId);
+    const ts = this.now();
+    const stored: StoredRecurringRule = { ...clone(rule), createdAt: ts, updatedAt: ts, deleted: false };
+    this.recurringRules.set(rule.id, stored);
+    return clone(stored);
+  }
+
+  async listRecurringRules(opts: { bookId?: string; includeInactive?: boolean } = {}): Promise<StoredRecurringRule[]> {
+    const out: StoredRecurringRule[] = [];
+    for (const r of this.recurringRules.values()) {
+      if (r.deleted) continue;
+      if (!opts.includeInactive && !r.active) continue;
+      if (opts.bookId && r.bookId !== opts.bookId) continue;
+      out.push(clone(r));
+    }
+    return out;
+  }
+
+  async updateRecurringRule(id: string, patch: RecurringRulePatch): Promise<StoredRecurringRule> {
+    const r = this.recurringRules.get(id);
+    if (!r || r.deleted) throw new Error(`周期记账规则不存在：${id}`);
+    const updated: StoredRecurringRule = { ...r, ...patch, updatedAt: this.now() };
+    this.recurringRules.set(id, updated);
+    return clone(updated);
+  }
+
+  async removeRecurringRule(id: string): Promise<void> {
+    const r = this.recurringRules.get(id);
+    if (!r || r.deleted) throw new Error(`周期记账规则不存在：${id}`);
+    this.recurringRules.set(id, { ...r, deleted: true, updatedAt: this.now() });
   }
 
   // ---- 生意：客户 ----
