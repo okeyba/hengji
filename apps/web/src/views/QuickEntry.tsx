@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { expandEntry, forexEntry, toMinor } from '@app/core';
+import { advanceDueDate, expandEntry, forexEntry, toMinor } from '@app/core';
 import type { EntryInput } from '@app/core';
 import type { AppData } from '../App';
 import { genId } from '../db';
@@ -21,6 +21,16 @@ export default function QuickEntry({ data }: { data: AppData }) {
   const [toId, setToId] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
+  const [savedForRecurring, setSavedForRecurring] = useState<{
+    kind: Kind;
+    date: string;
+    amount: number;
+    payee: string;
+    catId: string;
+    accId: string;
+    toId: string;
+    currency: string;
+  } | null>(null);
 
   const cats = accounts.filter((a) => a.type === (kind === 'expense' ? 'expense' : 'income'));
   const reals = accounts.filter((a) => a.type === 'asset' || a.type === 'liability');
@@ -78,6 +88,7 @@ export default function QuickEntry({ data }: { data: AppData }) {
         await repo.addTransaction(expandEntry(input, genId));
       }
       await reload();
+      if (!isForex) setSavedForRecurring({ kind, date, amount: minor, payee, catId: effCat, accId: effAcc, toId: effTo, currency: accCurrency });
       setAmount('');
       setToAmount('');
       setPayee('');
@@ -85,6 +96,34 @@ export default function QuickEntry({ data }: { data: AppData }) {
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  async function setAsRecurring(): Promise<void> {
+    if (!savedForRecurring) return;
+    const s = savedForRecurring;
+    const day = Number(s.date.slice(8, 10));
+    const { nextDueDate } = advanceDueDate({ nextDueDate: s.date, dayOfMonth: day });
+    await repo.addRecurringRule({
+      id: genId(),
+      bookId: book.id,
+      active: true,
+      kind: s.kind,
+      categoryAccountId: s.kind !== 'transfer' ? s.catId : null,
+      assetAccountId: s.kind !== 'transfer' ? s.accId : null,
+      fromAccountId: s.kind === 'transfer' ? s.accId : null,
+      toAccountId: s.kind === 'transfer' ? s.toId : null,
+      amount: s.amount,
+      currency: s.currency,
+      payee: s.payee,
+      note: '',
+      tags: [],
+      dayOfMonth: day,
+      nextDueDate,
+      endDate: null,
+    });
+    await reload();
+    setSavedForRecurring(null);
+    setOk(`已设为周期记账 ✓（下次 ${nextDueDate}）`);
   }
 
   return (
@@ -166,6 +205,11 @@ export default function QuickEntry({ data }: { data: AppData }) {
       </div>
       {err && <p className="form-err">{err}</p>}
       {ok && <p className="form-ok">{ok}</p>}
+      {savedForRecurring && (
+        <button className="lnk" onClick={() => void setAsRecurring()}>
+          设为周期记账
+        </button>
+      )}
       <button className="btn btn-primary wfull" onClick={() => void save()}>
         保存
       </button>

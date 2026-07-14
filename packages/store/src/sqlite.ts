@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { assertBalanced } from '@app/core';
-import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Posting, Product, Purchase, Reconciliation, Settlement, StagingBatch, StagingBatchStatus, StagingRow, StagingRowStatus, Supplier, Transaction } from '@app/core';
+import type { Account, Book, Budget, Customer, FeeDefinition, InventoryMovement, Order, OrderStatus, PluginDocument, Posting, Product, Purchase, Reconciliation, RecurringRule, Settlement, StagingBatch, StagingBatchStatus, StagingRow, StagingRowStatus, Supplier, Transaction } from '@app/core';
 import type {
   AccountPatch,
   BookPatch,
@@ -11,6 +11,7 @@ import type {
   OrderPatch,
   ProductPatch,
   PurchasePatch,
+  RecurringRulePatch,
   Repository,
   StagingBatchPatch,
   StagingRowPatch,
@@ -25,6 +26,7 @@ import type {
   StoredProduct,
   StoredPurchase,
   StoredReconciliation,
+  StoredRecurringRule,
   StoredSetting,
   StoredSettlement,
   StoredStagingBatch,
@@ -51,6 +53,7 @@ import {
   toPurchase,
   toPurchaseLine,
   toReconciliation,
+  toRecurringRule,
   toSetting,
   toSettlement,
   toStagingBatch,
@@ -73,6 +76,7 @@ import type {
   PurchaseLineRow,
   PurchaseRow,
   ReconciliationRow,
+  RecurringRuleRow,
   SettingRow,
   SettlementRow,
   StagingBatchRow,
@@ -424,6 +428,98 @@ export class SqliteRepository implements Repository {
   private async getBudget(id: string): Promise<StoredBudget | null> {
     const r = this.db.prepare('SELECT * FROM budgets WHERE id = ? AND deleted = 0').get(id) as BudgetRow | undefined;
     return r ? toBudget(r) : null;
+  }
+
+  // ---- 周期记账 ----
+  async addRecurringRule(rule: RecurringRule): Promise<StoredRecurringRule> {
+    if (this.db.prepare('SELECT 1 FROM recurring_rules WHERE id = ?').get(rule.id)) {
+      throw new Error(`周期记账规则已存在：${rule.id}`);
+    }
+    this.assertBook(rule.bookId);
+    const ts = this.now();
+    this.db
+      .prepare(
+        `INSERT INTO recurring_rules (id, book_id, active, kind, category_account_id, asset_account_id, from_account_id, to_account_id, amount, currency, payee, note, tags, day_of_month, next_due_date, end_date, created_at, updated_at, deleted)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      )
+      .run(
+        rule.id,
+        rule.bookId,
+        rule.active ? 1 : 0,
+        rule.kind,
+        rule.categoryAccountId,
+        rule.assetAccountId,
+        rule.fromAccountId,
+        rule.toAccountId,
+        rule.amount,
+        rule.currency,
+        rule.payee,
+        rule.note,
+        JSON.stringify(rule.tags),
+        rule.dayOfMonth,
+        rule.nextDueDate,
+        rule.endDate,
+        ts,
+        ts,
+      );
+    return (await this.getRecurringRule(rule.id))!;
+  }
+
+  async listRecurringRules(opts: { bookId?: string; includeInactive?: boolean } = {}): Promise<StoredRecurringRule[]> {
+    const cond = ['deleted = 0'];
+    const params: string[] = [];
+    if (!opts.includeInactive) cond.push('active = 1');
+    if (opts.bookId) {
+      cond.push('book_id = ?');
+      params.push(opts.bookId);
+    }
+    const rows = this.db
+      .prepare(`SELECT * FROM recurring_rules WHERE ${cond.join(' AND ')}`)
+      .all(...params) as unknown as RecurringRuleRow[];
+    return rows.map(toRecurringRule);
+  }
+
+  async updateRecurringRule(id: string, patch: RecurringRulePatch): Promise<StoredRecurringRule> {
+    const cur = await this.getRecurringRule(id);
+    if (!cur) throw new Error(`周期记账规则不存在：${id}`);
+    const next: StoredRecurringRule = { ...cur, ...patch, updatedAt: this.now() };
+    this.db
+      .prepare(
+        `UPDATE recurring_rules SET active=?, kind=?, category_account_id=?, asset_account_id=?, from_account_id=?, to_account_id=?, amount=?, currency=?, payee=?, note=?, tags=?, day_of_month=?, next_due_date=?, end_date=?, updated_at=? WHERE id=?`,
+      )
+      .run(
+        next.active ? 1 : 0,
+        next.kind,
+        next.categoryAccountId,
+        next.assetAccountId,
+        next.fromAccountId,
+        next.toAccountId,
+        next.amount,
+        next.currency,
+        next.payee,
+        next.note,
+        JSON.stringify(next.tags),
+        next.dayOfMonth,
+        next.nextDueDate,
+        next.endDate,
+        next.updatedAt,
+        id,
+      );
+    return (await this.getRecurringRule(id))!;
+  }
+
+  async removeRecurringRule(id: string): Promise<void> {
+    if (!this.db.prepare('SELECT 1 FROM recurring_rules WHERE id = ? AND deleted = 0').get(id)) {
+      throw new Error(`周期记账规则不存在：${id}`);
+    }
+    this.db.prepare('UPDATE recurring_rules SET deleted = 1, updated_at = ? WHERE id = ?').run(this.now(), id);
+  }
+
+  private async getRecurringRule(id: string): Promise<StoredRecurringRule | null> {
+    const r = this.db.prepare('SELECT * FROM recurring_rules WHERE id = ? AND deleted = 0').get(id) as
+      | RecurringRuleRow
+      | undefined;
+    return r ? toRecurringRule(r) : null;
   }
 
   // ---- 生意：客户 ----

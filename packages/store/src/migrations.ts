@@ -32,6 +32,8 @@
  * - m18：撤销原语地基（账单导入 增量2·M18a）。transactions 加 order_id 列——订单完成时生成的
  *   收入/COGS/代采结转分录都回填，撤销订单时一把捞全（解决代采结转分录无处可查的孤儿引用）。
  *   既有交易默认 NULL（=非订单完成分录）；纯新增列，不动既有数据。
+ * - m19：周期记账（工资/房租/分期等每月固定记账）。recurring_rules 存"模板"（不存 txn 快照、
+ *   不引用历史 txn）；next_due_date 是唯一可变锚点，web 编排层原子推进。纯新增表，不动既有数据。
  */
 
 export interface SqlRunner {
@@ -399,7 +401,34 @@ const M17: string[] = [
 // 撤销订单据此一把捞全（含此前无处可查的代采结转孤儿）。既有交易回落 NULL；纯新增列。
 const M18: string[] = [`ALTER TABLE transactions ADD COLUMN order_id TEXT`];
 
-export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18];
+// m19：周期记账。recurring_rules 存模板；纯新增表，不动既有数据。
+const M19: string[] = [
+  `CREATE TABLE IF NOT EXISTS recurring_rules (
+    id TEXT PRIMARY KEY,
+    book_id TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL,
+    category_account_id TEXT,
+    asset_account_id TEXT,
+    from_account_id TEXT,
+    to_account_id TEXT,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'CNY',
+    payee TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]',
+    day_of_month INTEGER NOT NULL,
+    next_due_date TEXT NOT NULL,
+    end_date TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_recurring_rules_book ON recurring_rules(book_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_recurring_rules_next_due ON recurring_rules(next_due_date)`,
+];
+
+export const MIGRATIONS: ReadonlyArray<ReadonlyArray<string>> = [M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12, M13, M14, M15, M16, M17, M18, M19];
 
 export async function migrate(r: SqlRunner): Promise<void> {
   const v = await r.getVersion();

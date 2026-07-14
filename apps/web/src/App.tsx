@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { confirmAsk } from './confirm';
 import { accountBalance, convertAmount, outstandingCharges, unclearedCount } from '@app/core';
 import type { AccountingBasis, BookType, ConvertCtx } from '@app/core';
-import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredCustomer, StoredFeeDefinition, StoredOrder, StoredSetting, StoredSettlement, StoredSupplier, StoredTransaction } from '@app/store';
+import type { Repository, StoredAccount, StoredBook, StoredBudget, StoredCustomer, StoredFeeDefinition, StoredOrder, StoredRecurringRule, StoredSetting, StoredSettlement, StoredSupplier, StoredTransaction } from '@app/store';
 import { BOOK_META, createBookWithChart, demoRepoOnce, isDesktop, openDesktopRepoOnce, resetDesktopRepo } from './db';
 import { daysBetween, fmtMoney, setCurrencyRegistry, todayISO } from './format';
 import { customerOrderStatus, payableLedger } from './biz';
@@ -13,6 +13,7 @@ import OverviewAll from './views/OverviewAll';
 import Dashboard from './views/Dashboard';
 import Transactions from './views/Transactions';
 import Budgets from './views/Budgets';
+import Recurring from './views/Recurring';
 import Invest from './views/Invest';
 import Accounts from './views/Accounts';
 import Customers from './views/Customers';
@@ -26,7 +27,7 @@ import Reconcile from './views/Reconcile';
 import ImportReview from './views/ImportReview';
 import Settings from './views/Settings';
 
-type View = 'dashboard' | 'txns' | 'budgets' | 'invest' | 'accounts' | 'reconcile' | 'customers' | 'suppliers' | 'orders' | 'products' | 'inventory' | 'purchases' | 'fees' | 'documents';
+type View = 'dashboard' | 'txns' | 'budgets' | 'recurring' | 'invest' | 'accounts' | 'reconcile' | 'customers' | 'suppliers' | 'orders' | 'products' | 'inventory' | 'purchases' | 'fees' | 'documents';
 /** 顶层导航：财务总表 / 全局设置 / 某账本 id。 */
 const OVERVIEW = 'all';
 const SETTINGS = '__settings__';
@@ -44,6 +45,8 @@ export interface AppData {
   /** 全部账本交易（全局账户余额跨账本聚合用——全局账户的流水散落多账本） */
   allTxns: StoredTransaction[];
   budgets: StoredBudget[];
+  /** 周期记账模板（本账本） */
+  recurringRules: StoredRecurringRule[];
   /** 全局记账口径（对所有账本生效） */
   basis: AccountingBasis;
   /** 多币种折算上下文（展示币种 + 汇率表，app 级全局） */
@@ -58,6 +61,7 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['dashboard', '总览'],
     ['txns', '流水'],
     ['budgets', '预算'],
+    ['recurring', '周期记账'],
     ['accounts', '账户'],
   ],
   business: [
@@ -71,11 +75,13 @@ const TABS: Record<BookType, Array<[View, string]>> = {
     ['fees', '费用'],
     ['txns', '流水'],
     ['budgets', '预算'],
+    ['recurring', '周期记账'],
     ['accounts', '账户'],
   ],
   investment: [
     ['invest', '投资'],
     ['txns', '流水'],
+    ['recurring', '周期记账'],
     ['accounts', '账户'],
   ],
 };
@@ -86,6 +92,7 @@ const SIMPLE_BUSINESS_TABS: Array<[View, string]> = [
   ['dashboard', '总览'],
   ['txns', '流水'],
   ['budgets', '预算'],
+  ['recurring', '周期记账'],
   ['accounts', '账户'],
 ];
 
@@ -95,6 +102,7 @@ export default function App() {
   const [accounts, setAccounts] = useState<StoredAccount[]>([]);
   const [txns, setTxns] = useState<StoredTransaction[]>([]);
   const [budgets, setBudgets] = useState<StoredBudget[]>([]);
+  const [recurringRules, setRecurringRules] = useState<StoredRecurringRule[]>([]);
   const [settings, setSettings] = useState<StoredSetting[]>([]);
   const [orders, setOrders] = useState<StoredOrder[]>([]);
   const [customers, setCustomers] = useState<StoredCustomer[]>([]);
@@ -114,11 +122,12 @@ export default function App() {
   const [encrypted, setEncrypted] = useState(false);
 
   async function loadFrom(r: Repository): Promise<void> {
-    const [bk, a, t, b, s, os, cs, st, sup, fd] = await Promise.all([
+    const [bk, a, t, b, rr, s, os, cs, st, sup, fd] = await Promise.all([
       r.listBooks({ includeArchived: true }),
       r.listAccounts(),
       r.listTransactions(),
       r.listBudgets(),
+      r.listRecurringRules({ includeInactive: true }),
       r.listSettings(),
       r.listOrders(),
       r.listCustomers({ includeArchived: true }),
@@ -131,6 +140,7 @@ export default function App() {
     setAccounts(a);
     setTxns(t);
     setBudgets(b);
+    setRecurringRules(rr);
     setSettings(s);
     setOrders(os);
     setCustomers(cs);
@@ -240,8 +250,9 @@ export default function App() {
       accounts: liveAccounts.filter((a) => a.global || a.bookId === cur),
       txns: txns.filter((t) => t.bookId === cur),
       budgets: budgets.filter((b) => b.bookId === cur),
+      recurringRules: recurringRules.filter((r) => r.bookId === cur),
     }),
-    [liveAccounts, txns, budgets, cur],
+    [liveAccounts, txns, budgets, recurringRules, cur],
   );
 
   // 多币种生效值：开关开 **或** 持有任一外币账户（liveAccounts 已排除归档账户 + 归档账本的账户）。
@@ -522,6 +533,7 @@ export default function App() {
             {view === 'dashboard' && <Dashboard data={data} />}
             {view === 'txns' && <Transactions data={data} />}
             {view === 'budgets' && <Budgets data={data} />}
+            {view === 'recurring' && <Recurring data={data} />}
             {view === 'invest' && <Invest data={data} />}
             {view === 'accounts' && <Accounts data={data} />}
             {view === 'customers' && <Customers data={data} />}

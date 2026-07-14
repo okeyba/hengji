@@ -83,6 +83,43 @@ export interface Budget {
 }
 
 /**
+ * 周期记账模板（每月固定发生的记账动作，如工资/房租/分期）：存"模板"，不存 txn 快照、
+ * 不引用历史 txn——历史 txn 可被编辑/删除，模板要独立于其生命周期。
+ * 字段镜像 `EntryInput`（见 ledger.ts）三种 kind：expense/income 用 categoryAccountId+assetAccountId，
+ * transfer 用 fromAccountId+toAccountId，未用的一组为 null。
+ * 金额（amount）只是确认时的默认值，不锁死——确认动作允许调用方覆盖（工资默认接受/分期尾款要改）。
+ * 频率只支持"每月第 N 天"（dayOfMonth），不做通用 RRULE、不建调度引擎；
+ * "到期提醒 + 一键确认"由 recurring.ts 的纯函数在渲染时扫描，绝不静默自动生成交易。
+ */
+export interface RecurringRule {
+  id: string;
+  bookId: string;
+  /** 停用后不再出现在待确认清单；分期还清等场景的主要关闭机制。 */
+  active: boolean;
+  kind: 'expense' | 'income' | 'transfer';
+  /** expense/income 用：费用/收入科目。transfer 下为 null。 */
+  categoryAccountId: string | null;
+  /** expense/income 用：资产/负债账户。transfer 下为 null。 */
+  assetAccountId: string | null;
+  /** transfer 用：转出账户。expense/income 下为 null。 */
+  fromAccountId: string | null;
+  /** transfer 用：转入账户。expense/income 下为 null。 */
+  toAccountId: string | null;
+  /** 模板默认金额（最小单位）；确认时可覆盖。 */
+  amount: number;
+  currency: string;
+  payee: string;
+  note: string;
+  tags: string[];
+  /** 每月第几天到期（1-31）；短月夹断到当月最后一天，见 recurring.ts 的 advanceDueDate。 */
+  dayOfMonth: number;
+  /** 下次到期日 YYYY-MM-DD——唯一可变锚点，确认/跳过都只推进它。 */
+  nextDueDate: string;
+  /** 可选停止日（分期还清等），仅供展示；MVP 不自动据此停用，停用请用 active。 */
+  endDate: string | null;
+}
+
+/**
  * 生意系统（v0.2 B 期）：客户 / 订单 / 收款。
  * 业务单据是操作层，财务动作（订单完成确认收入、收款核销）自动生成平衡分录进复式内核，
  * 报表/应收余额从分录聚合——不另立平行账。见 ARCHITECTURE.md「多账本与生意系统」。

@@ -5,6 +5,7 @@ export * from './reports';
 export * from './adjust';
 export * from './seed';
 export * from './budget';
+export * from './recurring';
 export * from './business';
 export * from './reconcile';
 export * from './inventory';
